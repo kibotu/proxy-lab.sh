@@ -1,6 +1,6 @@
 # proxy-lab.sh
 
-One command to see your app's HTTPS traffic: a mitmproxy for the **Android emulator** and the **iOS simulator**, with pre-flight checks that fix what they can and explain what they can't.
+One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy.org/) for the **Android emulator** and the **iOS simulator**, with pre-flight checks that fix what they can and explain what they can't.
 
 ```bash
 ./android/start-proxy.sh    # Android: checks → CA → proxy setting → mitmdump
@@ -96,6 +96,7 @@ domains.yaml             the domain list — one edit, both platforms
 local_router.py          shared addon, reads domains.yaml
 ```
 
-## License
+## Support
 
-Apache-2.0
+If proxy-lab.sh saved you a few hours (or a few `ERR_CERT_AUTHORITY_INVALID` hunts), consider [buying me a coffee](https://buymeacoffee.com/kibotu).
+
