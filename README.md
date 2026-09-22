@@ -12,10 +12,10 @@
 
 ```bash
 # iOS
-uvx proxy-lab start ios domains.yml
+uvx proxy-lab start ios
 
 # android
-uvx proxy-lab start android domains.yml
+uvx proxy-lab start android
 ```
 
 ![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.png)
