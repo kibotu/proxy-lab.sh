@@ -17,7 +17,7 @@ uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start ios domain
 uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start android domains.yml
 ```
 
-![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.jpeg)
+![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.png)
 
 ## Contents
 
