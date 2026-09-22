@@ -1,0 +1,5 @@
+# Host suffixes logged as [local_router] … — read by local_router.py,
+# shared by android/ and ios/. Leading dot = subdomains only;
+# without it ("example.com") the apex matches too.
+domains:
+  - ".example.com"
