@@ -1,13 +1,31 @@
 # proxy-lab.sh
 
-One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy.org/) for the **Android emulator** and the **iOS simulator**, with pre-flight checks that fix what they can and explain what they can't.
+One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy.org/) for the **Android emulator** and the **iOS simulator**.
+
+**Get started:** list your domains in [`domains.yaml`](domains.yaml), then run the script for your platform:
 
 ```bash
 ./android/start-proxy.sh    # Android: checks → CA → proxy setting → mitmdump
-./ios/start-proxy.sh        # iOS: shares the host network, nothing to configure
+./ios/start-proxy.sh        # iOS: shares the host network, no device setup
 ```
 
-Both scripts are idempotent — stop with Ctrl-C and nothing is left behind: the proxy dies with the script, the Android device's proxy setting is cleared. Even a `kill -9`'d run is reaped on the next start.
+## Why this repo
+
+An app dev just wants to see their app's traffic — not spend a day on certificate plumbing. On the Android emulator, mitmproxy doesn't work out of the box: two separate things must be hand-wired before the first HTTPS request shows up in your terminal:
+
+- **Trust.** Since Android 7, apps ignore user-installed CAs. The [official mitmproxy guide](https://docs.mitmproxy.org/stable/howto/install-system-trusted-ca-android/) puts the CA into the read-only *system* store instead: hash the certificate by hand, remount `/system`, disable verified boot, reboot — or handcraft a Magisk module for Google Play images. Android 14+ moved that store into an immutable APEX, and any boot without `-writable-system` loads a clean image anyway.
+- **Routing.** The emulator must be pointed at the host — `10.0.2.2:8080`, not `localhost` — through a manual settings command that goes stale without telling anyone.
+
+Miss one and the symptoms explain nothing: `ERR_CERT_AUTHORITY_INVALID`, or requests that quietly time out.
+
+One script per platform replaces the checklist — Android gets the full treatment, iOS a thin wrapper:
+
+- **The whole sequence** — checks → CA → proxy setting → `mitmdump`; stop with Ctrl-C.
+- **Pre-flight, not stack traces** — tooling, AVD image, busy port, missing files are caught before they cost you an afternoon.
+- **Certificate, once** — the CA goes into the *user* trust store: no remount, no Magisk, no `-writable-system`; one reboot, once per AVD (see [How trust works](#how-trust-works)).
+- **Idempotent** — re-run any time; a stale proxy from a `kill -9` is reaped on the next Android run.
+- **Reproducible** — the mitmproxy version is pinned, so the whole team sees the same behaviour.
+- **One config, both platforms** — your domains live in `domains.yaml`.
 
 ## Requirements
 
