@@ -4,7 +4,6 @@
 [![Release](https://github.com/kibotu/proxy-lab.sh/actions/workflows/release.yml/badge.svg)](https://github.com/kibotu/proxy-lab.sh/actions/workflows/release.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/kibotu/proxy-lab.sh)](https://github.com/kibotu/proxy-lab.sh/releases)
 [![PyPI](https://img.shields.io/pypi/v/proxy-lab)](https://pypi.org/project/proxy-lab/)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/proxy-lab)](https://pypi.org/project/proxy-lab/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#requirements)
 [![Shell](https://img.shields.io/badge/shell-bash-informational)](#project-layout)
