@@ -61,6 +61,7 @@ preflight_tools() {
   done
   if [ ${#missing[@]} -gt 0 ]; then
     for c in "${missing[@]}"; do
+      # shellcheck disable=SC2016 # hint is copy-paste text — $PATH must stay literal
       case "$c" in
         uv) hints+=('uv: brew install uv — https://docs.astral.sh/uv/getting-started/installation/') ;;
         adb) hints+=('adb: install Android Studio, then export PATH="$PATH:$HOME/Library/Android/sdk/platform-tools" — https://developer.android.com/studio') ;;
@@ -102,6 +103,7 @@ ensure_host_ca() {
       "Run once: ${MITMDUMP[*]}" \
       'https://docs.mitmproxy.org/stable/concepts/certificates/'
   fi
+  # shellcheck disable=SC2088 # display path — the literal ~ is what we mean
   info '✓' 'host CA' '~/.mitmproxy/mitmproxy-ca-cert.pem'
 }
 
@@ -119,6 +121,7 @@ boot_emulator() {
       wait_boot
       info '✓' 'emulator' "$pending ready"
     else
+      # shellcheck disable=SC2016 # hint is copy-paste text — $PATH must stay literal
       command -v emulator >/dev/null 2>&1 || fail 'emulator' 'not on PATH' \
         'Install Android Studio, then: export PATH="$PATH:$HOME/Library/Android/sdk/emulator" — https://developer.android.com/studio'
       if [ -n "${AVD:-}" ]; then
