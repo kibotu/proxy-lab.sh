@@ -26,8 +26,6 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
 - [How trust works](#how-trust-works)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
-- [Layout](#layout)
-- [Releases](#releases)
 - [Contributing](#contributing)
 - [License](#license)
 - [Support](#support)
@@ -190,26 +188,9 @@ The script's own error messages cover most failures. The recurring ones:
 
 Still stuck? [Open an issue](https://github.com/kibotu/proxy-lab.sh/issues) with the exact error line — the scripts are meant to fail loudly, so that line usually has the answer.
 
-## Layout
-
-```
-android/start-proxy.sh   full lifecycle: checks → CA → proxy setting → mitmdump
-ios/start-proxy.sh       bare mitmdump for the simulator (shared host network)
-domains.yaml             the domain list — one edit, both platforms
-local_router.py          shared addon, reads domains.yaml
-proxy_lab/cli.py         uvx entry point: proxy-lab start <android|ios> [domains.yml]
-pyproject.toml           packaging, so uvx runs the repo straight from GitHub
-.github/workflows/ci.yml shellcheck + proxy smoke test (Ubuntu, macOS)
-.github/workflows/release.yml  tag (X.Y.Z) → GitHub Release with wheel + sdist
-```
-
-## Releases
-
-Tag `X.Y.Z` — no `v` prefix — and push it: the release workflow sets the project version to the tag, builds the wheel and sdist, and publishes them to [GitHub Releases](https://github.com/kibotu/proxy-lab.sh/releases) with generated notes. Because the tag is the source of truth, `pyproject.toml` on `main` may show an older version than the latest release.
-
 ## Contributing
 
-Issues and pull requests are welcome — especially real-world failure modes the pre-flight checks don't catch yet. 
+Issues and pull requests are welcome — especially real-world failure modes the pre-flight checks don't catch yet. Add notable changes to [CHANGELOG.md](CHANGELOG.md) under `Unreleased`.
 
 ## Support
 
