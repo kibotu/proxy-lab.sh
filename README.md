@@ -74,7 +74,7 @@ Point to it from the `<application>` tag in `AndroidManifest.xml`:
 **2. Start the proxy:**
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@0.9.0 proxy-lab start android
+uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start android
 ```
 
 The script checks your tools, reuses a running emulator or boots one, installs the mitmproxy CA into the user trust store, and sets the emulator proxy to `10.0.2.2:8080`. The CA install reboots the emulator one time per AVD.
@@ -90,7 +90,7 @@ The script checks your tools, reuses a running emulator or boots one, installs t
 **1. Start the proxy:**
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@0.9.0 proxy-lab start ios
+uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start ios
 ```
 
 **2. Send the simulator's traffic through it.** The simulator uses your Mac's network stack, so it has no proxy setting of its own. Pick one:
@@ -125,7 +125,7 @@ Entries match the end of the host name. A leading dot excludes the apex domain.
 Pass the file as the last argument:
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@0.9.0 proxy-lab start android my-domains.yml
+uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start android my-domains.yml
 ```
 
 Without an argument you get the [bundled `domains.yaml`](domains.yaml), which lists `.example.com` only. Keep your own file next to your project and commit it, so the team logs the same hosts.
@@ -148,13 +148,13 @@ Environment variables cover the rest:
 | `PROXY_LAB_CONFIG` | bundled `domains.yaml` | Path to your domains file. Same effect as the argument above. |
 
 ```bash
-PORT=8081 AVD=Pixel_10a uvx --from git+https://github.com/kibotu/proxy-lab.sh@0.9.0 proxy-lab start android
+PORT=8081 AVD=Pixel_10a uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start android
 ```
 
 If you run this daily, install the command once and keep the line short:
 
 ```bash
-uv tool install git+https://github.com/kibotu/proxy-lab.sh@0.9.0
+uv tool install git+https://github.com/kibotu/proxy-lab.sh@
 proxy-lab start android
 ```
 
@@ -246,7 +246,7 @@ If you need those, or a GUI, look at [HTTP Toolkit](https://httptoolkit.com/), [
 ## Versions and releases
 
 - **mitmproxy** is pinned to `12.2.3` inside the scripts, so the whole team sees the same behaviour.
-- **proxy-lab.sh** is pinned by you: `@0.9.0` in the `uvx` command. Without a tag you get `main`. Put the pinned command in your project README or a Makefile, and the team runs one version.
+- **proxy-lab.sh** is pinned by you: `@1.0.0` in the `uvx` command. Without a tag you get `main`. Put the pinned command in your project README or a Makefile, and the team runs one version.
 - Tags are `X.Y.Z`, with no `v` prefix. A tag push builds the wheel and sdist at that version and publishes a [GitHub Release](https://github.com/kibotu/proxy-lab.sh/releases). [CHANGELOG.md](CHANGELOG.md) has the per-version detail.
 
 ## Project layout
