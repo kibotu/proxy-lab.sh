@@ -10,7 +10,11 @@
 **See your app's HTTPS traffic with one command.** proxy-lab.sh starts [mitmproxy](https://www.mitmproxy.org/) for the **Android emulator** and the **iOS simulator**, and it does the certificate work for you. No `/system` remount, no Magisk, no stale proxy setting.
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@1.0.0 proxy-lab start android
+# iOS
+uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start ios domains.yml
+
+# android
+uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start android domains.yml
 ```
 
 ![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.jpeg)
