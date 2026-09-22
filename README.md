@@ -12,6 +12,8 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
 ./ios/start-proxy.sh        # shares the host network, no device setup
 ```
 
+![](docs/teaser.jpeg)
+
 ## Contents
 
 - [Quickstart](#quickstart)
