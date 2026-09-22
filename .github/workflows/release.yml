@@ -1,0 +1,38 @@
+name: Release
+
+# Tag push drives the release: tag 1.0.0 (no v prefix) → GitHub Release.
+# The tag is the source of truth — pyproject.toml takes its version from it,
+# so the built artifacts can never disagree with the tag.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Set project version from tag
+        run: uv version --no-sync "$GITHUB_REF_NAME"
+      - name: Build
+        run: uv build
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-run of this job (e.g. after a partial failure): replace artifacts.
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --generate-notes --title "$TAG"
+          fi

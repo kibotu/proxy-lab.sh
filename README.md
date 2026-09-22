@@ -1,6 +1,8 @@
 # proxy-lab.sh
 
 [![CI](https://github.com/kibotu/proxy-lab.sh/actions/workflows/ci.yml/badge.svg)](https://github.com/kibotu/proxy-lab.sh/actions/workflows/ci.yml)
+[![Release](https://github.com/kibotu/proxy-lab.sh/actions/workflows/release.yml/badge.svg)](https://github.com/kibotu/proxy-lab.sh/actions/workflows/release.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/kibotu/proxy-lab.sh)](https://github.com/kibotu/proxy-lab.sh/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#requirements)
 [![Shell](https://img.shields.io/badge/shell-bash-informational)](#layout)
@@ -25,6 +27,7 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Layout](#layout)
+- [Releases](#releases)
 - [Contributing](#contributing)
 - [License](#license)
 - [Support](#support)
@@ -46,6 +49,10 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
    ```
    uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start android
    uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start ios mydomains.yml
+   ```
+   Pin a released version with `@X.Y.Z` (see [Releases](#releases)):
+   ```
+   uvx --from git+https://github.com/kibotu/proxy-lab.sh@1.0.0 proxy-lab start ios
    ```
 4. Build and run your debug app. Traffic to your domains shows up in the terminal.
 5. Stop with `Ctrl-C`.
@@ -193,7 +200,12 @@ local_router.py          shared addon, reads domains.yaml
 proxy_lab/cli.py         uvx entry point: proxy-lab start <android|ios> [domains.yml]
 pyproject.toml           packaging, so uvx runs the repo straight from GitHub
 .github/workflows/ci.yml shellcheck + proxy smoke test (Ubuntu, macOS)
+.github/workflows/release.yml  tag (X.Y.Z) → GitHub Release with wheel + sdist
 ```
+
+## Releases
+
+Tag `X.Y.Z` — no `v` prefix — and push it: the release workflow sets the project version to the tag, builds the wheel and sdist, and publishes them to [GitHub Releases](https://github.com/kibotu/proxy-lab.sh/releases) with generated notes. Because the tag is the source of truth, `pyproject.toml` on `main` may show an older version than the latest release.
 
 ## Contributing
 
