@@ -14,7 +14,7 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
 ./ios/start-proxy.sh        # shares the host network, no device setup
 ```
 
-![](docs/teaser.jpeg)
+![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.jpeg)
 
 ## Contents
 
@@ -33,11 +33,12 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
 ## Quickstart
 
 1. Install [uv](https://docs.astral.sh/uv/): `brew install uv`
-2. Add your API domains to [`domains.yaml`](domains.yaml):
+2. Add your API domains to a domains file:
    ```yaml
    domains:
      - ".example.com"
    ```
+   Cloning the repo? Edit [`domains.yaml`](domains.yaml) in place. Using `uvx` below with no clone? Save this as your own file and pass its path as shown in step 3.
 3. Run the script for your platform:
    ```
    ./android/start-proxy.sh   # Android emulator
@@ -72,8 +73,8 @@ One script per platform replaces the checklist. Android gets the full treatment,
 - **Pre-flight checks, not stack traces** — missing tools, the wrong AVD image, a busy port, missing files: all caught before they cost you an afternoon.
 - **Certificate, once** — the CA goes into the *user* trust store: no remount, no Magisk, no `-writable-system`. One reboot, once per AVD (see [How trust works](#how-trust-works)).
 - **Idempotent** — re-run any time. A stale proxy from a `kill -9` is cleaned up on the next Android run.
-- **Reproducible** — the mitmproxy version is pinned, so the whole team sees the same behaviour.
-- **One config, both platforms** — your domains live in `domains.yaml`.
+- **Reproducible** — mitmproxy runs at a version pinned per run, so the whole team sees the same behaviour. Pinning the scripts themselves across a team is a separate, coarser lever — see [Releases](#releases).
+- **One config, both platforms** — your domains live in one file.
 
 ## Requirements
 
@@ -187,6 +188,7 @@ The script's own error messages cover most failures. The recurring ones:
 - **`[local_router]` lines missing from the log** — the domain isn't in the domains file in use (`domains.yaml`, or the one you passed to `proxy-lab start`).
 
 Still stuck? [Open an issue](https://github.com/kibotu/proxy-lab.sh/issues) with the exact error line — the scripts are meant to fail loudly, so that line usually has the answer.
+what changed per version. The [Releases page](https://github.com/kibotu/proxy-lab.sh/releases) has the tags and diffs. Both are built by the CI and release workflows above.
 
 ## Contributing
 
