@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proxy-lab"
+version = "0.1.0"
+description = "One command to see your app's HTTPS traffic: a mitmproxy setup for the Android emulator and the iOS simulator."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+# mitmproxy itself runs via `uv tool run` from the shell scripts, pinned there.
+dependencies = []
+
+[project.scripts]
+proxy-lab = "proxy_lab.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["proxy_lab"]
+
+# The scripts locate local_router.py and domains.yaml relative to themselves
+# (proxy_lab/<platform>/start-proxy.sh → proxy_lab/), same layout as the repo.
+[tool.hatch.build.targets.wheel.force-include]
+"android" = "proxy_lab/android"
+"ios" = "proxy_lab/ios"
+"local_router.py" = "proxy_lab/local_router.py"
+"domains.yaml" = "proxy_lab/domains.yaml"

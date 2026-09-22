@@ -42,6 +42,11 @@ One command to see your app's HTTPS traffic: a [mitmproxy](https://www.mitmproxy
    ./android/start-proxy.sh   # Android emulator
    ./ios/start-proxy.sh       # iOS simulator
    ```
+   Or run it straight from GitHub, no clone needed:
+   ```
+   uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start android
+   uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start ios mydomains.yml
+   ```
 4. Build and run your debug app. Traffic to your domains shows up in the terminal.
 5. Stop with `Ctrl-C`.
 
@@ -164,6 +169,8 @@ domains:
 
 Matching requests log as `[local_router] …` in the proxy output. mitmproxy's addon API is Python, but `uv` runs it for you — you never touch an interpreter directly.
 
+Run via `uvx` and there is no checkout to edit: pass your domains file as an argument (`proxy-lab start ios mydomains.yml`). Without one, the packaged `domains.yaml` applies — which only lists `.example.com`, so keep a local copy of your own.
+
 ## Troubleshooting
 
 The script's own error messages cover most failures. The recurring ones:
@@ -172,7 +179,7 @@ The script's own error messages cover most failures. The recurring ones:
 - **`net::ERR_CERT_AUTHORITY_INVALID`** — the CA is missing from the user store, or you're intercepting a release build. Force a reinstall: `adb root && adb shell rm /data/misc/user/0/cacerts-added/<hash>.0`, re-run the script (one reboot), then restart the app — a running process doesn't reload trust anchors.
 - **Pages time out** — is the script still running? `adb shell settings get global http_proxy` should return `10.0.2.2:8080`. `null` means the script stopped and traffic is going direct, as intended.
 - **"No internet connection" banner while proxied** — Android's connectivity probe doesn't trust user CAs, so the OS marks the network as "partial connectivity". App traffic still works. Safe to ignore.
-- **`[local_router]` lines missing from the log** — the domain isn't in `domains.yaml`.
+- **`[local_router]` lines missing from the log** — the domain isn't in the domains file in use (`domains.yaml`, or the one you passed to `proxy-lab start`).
 
 Still stuck? [Open an issue](https://github.com/kibotu/proxy-lab.sh/issues) with the exact error line — the scripts are meant to fail loudly, so that line usually has the answer.
 
@@ -183,6 +190,8 @@ android/start-proxy.sh   full lifecycle: checks → CA → proxy setting → mit
 ios/start-proxy.sh       bare mitmdump for the simulator (shared host network)
 domains.yaml             the domain list — one edit, both platforms
 local_router.py          shared addon, reads domains.yaml
+proxy_lab/cli.py         uvx entry point: proxy-lab start <android|ios> [domains.yml]
+pyproject.toml           packaging, so uvx runs the repo straight from GitHub
 .github/workflows/ci.yml shellcheck + proxy smoke test (Ubuntu, macOS)
 ```
 

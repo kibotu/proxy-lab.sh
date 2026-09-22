@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROUTER="$(cd "$SCRIPT_DIR/.." && pwd)/local_router.py"
-CONFIG="$(cd "$SCRIPT_DIR/.." && pwd)/domains.yaml"
+CONFIG="${PROXY_LAB_CONFIG:-$(cd "$SCRIPT_DIR/.." && pwd)/domains.yaml}"
 MITMPROXY_VERSION="12.2.3"
 MITMDUMP=(uv tool run --from "mitmproxy==$MITMPROXY_VERSION" mitmdump)
 PORT="${PORT:-8080}"
@@ -73,7 +73,7 @@ preflight_tools() {
   [ -f "$ROUTER" ] ||
     fail 'tools' 'local_router.py missing (repo root)' 'use a complete checkout of this repo'
   [ -f "$CONFIG" ] ||
-    fail 'tools' 'domains.yaml missing (repo root)' 'use a complete checkout of this repo'
+    fail 'tools' "config missing: $CONFIG" 'use a complete checkout of this repo'
   # Warm uv's mitmproxy cache so start_proxy's up-poll never races a
   # first-time download; announce it only when the run is actually slow.
   "${MITMDUMP[@]}" --version >/dev/null 2>&1 &

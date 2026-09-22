@@ -38,7 +38,8 @@ jobs:
         run: |
           log=proxy.log
 
-          ./ios/start-proxy.sh >"$log" 2>&1 &
+          # through uvx, so the packaged entry point is what CI exercises
+          uvx --from . proxy-lab start ios >"$log" 2>&1 &
           proxy=$!
           trap 'kill "$proxy" 2>/dev/null || true' EXIT
 

@@ -1,11 +1,14 @@
 # Shared by android/ and ios/ — loads the domain list from domains.yaml
 # once at startup. Edit domains.yaml, not this file.
+import os
 from pathlib import Path
 
 import ruamel.yaml
 from mitmproxy import http
 
-CONFIG = Path(__file__).with_name("domains.yaml")
+# PROXY_LAB_CONFIG is set by the proxy-lab CLI when a domains file is passed;
+# without it, the domains.yaml next to this file (repo checkout or package).
+CONFIG = Path(os.environ.get("PROXY_LAB_CONFIG") or Path(__file__).with_name("domains.yaml"))
 
 with CONFIG.open() as fh:
     _config = ruamel.yaml.YAML(typ="safe").load(fh) or {}

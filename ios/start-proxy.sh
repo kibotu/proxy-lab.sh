@@ -13,7 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROUTER="$(cd "$SCRIPT_DIR/.." && pwd)/local_router.py"
-CONFIG="$(cd "$SCRIPT_DIR/.." && pwd)/domains.yaml"
+CONFIG="${PROXY_LAB_CONFIG:-$(cd "$SCRIPT_DIR/.." && pwd)/domains.yaml}"
 PORT="${PORT:-8080}"
 MITMPROXY_VERSION="12.2.3"
 MITMDUMP=(uv tool run --from "mitmproxy==$MITMPROXY_VERSION" mitmdump)
@@ -28,7 +28,7 @@ command -v uv >/dev/null ||
 [ -f "$ROUTER" ] ||
   fail "router missing: $ROUTER — use a complete checkout of this repo"
 [ -f "$CONFIG" ] ||
-  fail "config missing: $CONFIG — use a complete checkout of this repo"
+  fail "config missing: $CONFIG — use a complete checkout of this repo, or pass an existing domains file"
 
 # exec: this script becomes mitmdump (via uv), so killing it kills the proxy.
 exec "${MITMDUMP[@]}" \
