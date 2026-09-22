@@ -3,6 +3,8 @@
 [![CI](https://github.com/kibotu/proxy-lab.sh/actions/workflows/ci.yml/badge.svg)](https://github.com/kibotu/proxy-lab.sh/actions/workflows/ci.yml)
 [![Release](https://github.com/kibotu/proxy-lab.sh/actions/workflows/release.yml/badge.svg)](https://github.com/kibotu/proxy-lab.sh/actions/workflows/release.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/kibotu/proxy-lab.sh)](https://github.com/kibotu/proxy-lab.sh/releases)
+[![PyPI](https://img.shields.io/pypi/v/proxy-lab)](https://pypi.org/project/proxy-lab/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/proxy-lab)](https://pypi.org/project/proxy-lab/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#requirements)
 [![Shell](https://img.shields.io/badge/shell-bash-informational)](#project-layout)
@@ -11,10 +13,10 @@
 
 ```bash
 # iOS
-uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start ios domains.yml
+uvx proxy-lab start ios domains.yml
 
 # android
-uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab start android domains.yml
+uvx proxy-lab start android domains.yml
 ```
 
 ![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.png)
@@ -74,7 +76,7 @@ Point to it from the `<application>` tag in `AndroidManifest.xml`:
 **2. Start the proxy:**
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start android
+uvx proxy-lab start android
 ```
 
 The script checks your tools, reuses a running emulator or boots one, installs the mitmproxy CA into the user trust store, and sets the emulator proxy to `10.0.2.2:8080`. The CA install reboots the emulator one time per AVD.
@@ -90,7 +92,7 @@ The script checks your tools, reuses a running emulator or boots one, installs t
 **1. Start the proxy:**
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start ios
+uvx proxy-lab start ios
 ```
 
 **2. Send the simulator's traffic through it.** The simulator uses your Mac's network stack, so it has no proxy setting of its own. Pick one:
@@ -125,7 +127,7 @@ Entries match the end of the host name. A leading dot excludes the apex domain.
 Pass the file as the last argument:
 
 ```bash
-uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start android my-domains.yml
+uvx proxy-lab start android my-domains.yml
 ```
 
 Without an argument you get the [bundled `domains.yaml`](domains.yaml), which lists `.example.com` only. Keep your own file next to your project and commit it, so the team logs the same hosts.
@@ -148,17 +150,17 @@ Environment variables cover the rest:
 | `PROXY_LAB_CONFIG` | bundled `domains.yaml` | Path to your domains file. Same effect as the argument above. |
 
 ```bash
-PORT=8081 AVD=Pixel_10a uvx --from git+https://github.com/kibotu/proxy-lab.sh@ proxy-lab start android
+PORT=8081 AVD=Pixel_10a uvx proxy-lab start android
 ```
 
 If you run this daily, install the command once and keep the line short:
 
 ```bash
-uv tool install git+https://github.com/kibotu/proxy-lab.sh@
+uv tool install proxy-lab
 proxy-lab start android
 ```
 
-Move to a newer version with `uv tool install --force git+https://github.com/kibotu/proxy-lab.sh@<X.Y.Z>`.
+Move to a newer version with `uv tool install --force proxy-lab==<X.Y.Z>`.
 
 ## Run from a clone
 
@@ -246,8 +248,8 @@ If you need those, or a GUI, look at [HTTP Toolkit](https://httptoolkit.com/), [
 ## Versions and releases
 
 - **mitmproxy** is pinned to `12.2.3` inside the scripts, so the whole team sees the same behaviour.
-- **proxy-lab.sh** is pinned by you: `@1.0.0` in the `uvx` command. Without a tag you get `main`. Put the pinned command in your project README or a Makefile, and the team runs one version.
-- Tags are `X.Y.Z`, with no `v` prefix. A tag push builds the wheel and sdist at that version and publishes a [GitHub Release](https://github.com/kibotu/proxy-lab.sh/releases). [CHANGELOG.md](CHANGELOG.md) has the per-version detail.
+- **proxy-lab.sh** is pinned by you: `proxy-lab==1.0.1` in the `uvx` command. Without a pin you get the latest release. Put the pinned command in your project README or a Makefile, and the team runs one version.
+- Tags are `X.Y.Z`, with no `v` prefix. A tag push builds the wheel and sdist at that version and publishes both a [GitHub Release](https://github.com/kibotu/proxy-lab.sh/releases) and the same artifacts to [PyPI](https://pypi.org/project/proxy-lab/). [CHANGELOG.md](CHANGELOG.md) has the per-version detail.
 
 ## Project layout
 
