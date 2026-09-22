@@ -18,4 +18,6 @@ def request(flow: http.HTTPFlow) -> None:
     if not any(host.endswith(s) for s in LOCAL_DOMAIN_SUFFIXES):
         return
 
-    print(f"[local_router] {flow.request.scheme}://{host}{flow.request.path}")
+    # flush: this marker must be visible the moment the request happens —
+    # stdout is block-buffered when redirected (CI logs, | grep pipelines).
+    print(f"[local_router] {flow.request.scheme}://{host}{flow.request.path}", flush=True)

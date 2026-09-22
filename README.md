@@ -1,5 +1,6 @@
 # proxy-lab.sh
 
+[![CI](https://github.com/kibotu/proxy-lab.sh/actions/workflows/ci.yml/badge.svg)](https://github.com/kibotu/proxy-lab.sh/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#requirements)
 [![Shell](https://img.shields.io/badge/shell-bash-informational)](#layout)
@@ -180,6 +181,7 @@ android/start-proxy.sh   full lifecycle: checks → CA → proxy setting → mit
 ios/start-proxy.sh       bare mitmdump for the simulator (shared host network)
 domains.yaml             the domain list — one edit, both platforms
 local_router.py          shared addon, reads domains.yaml
+.github/workflows/ci.yml shellcheck + proxy smoke test (Ubuntu, macOS)
 ```
 
 ## Contributing

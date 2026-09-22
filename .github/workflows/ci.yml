@@ -1,0 +1,85 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck android/start-proxy.sh ios/start-proxy.sh
+
+  smoke:
+    name: proxy smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      PORT: "18080"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: start proxy, verify routing
+        run: |
+          log=proxy.log
+
+          ./ios/start-proxy.sh >"$log" 2>&1 &
+          proxy=$!
+          trap 'kill "$proxy" 2>/dev/null || true' EXIT
+
+          fail() {
+            echo "::error::$1"
+            cat "$log"
+            exit 1
+          }
+
+          # Cold start can download mitmproxy via uv; the first successful
+          # fetch through the proxy is the readiness signal.
+          ready=""
+          for _ in $(seq 1 120); do
+            curl -sf --max-time 15 -o /dev/null -x "http://127.0.0.1:$PORT" http://www.example.com/ && {
+              ready=1
+              break
+            }
+            kill -0 "$proxy" 2>/dev/null || break
+            sleep 1
+          done
+          [ -n "$ready" ] || fail "proxy never became ready on :$PORT"
+
+          # domains.yaml has ".example.com": subdomains match, the apex does not.
+          grep -q '\[local_router\] http://www\.example\.com/' "$log" ||
+            fail "router did not log www.example.com"
+
+          curl -sf --max-time 15 -o /dev/null -x "http://127.0.0.1:$PORT" http://example.com/ ||
+            fail "apex fetch through proxy failed"
+          curl -sf --max-time 15 -o /dev/null -x "http://127.0.0.1:$PORT" http://example.org/ ||
+            fail "example.org fetch through proxy failed"
+
+          if grep -q '\[local_router\] http://example\.com/' "$log"; then
+            fail "router logged the apex — leading dot must exclude it"
+          fi
+          if grep -q '\[local_router\].*example\.org' "$log"; then
+            fail "router logged example.org — not listed in domains.yaml"
+          fi
+
+          kill "$proxy" 2>/dev/null || true
+          wait "$proxy" 2>/dev/null || true
+          trap - EXIT
+
+          echo "=== smoke ok ==="
+          cat "$log"
