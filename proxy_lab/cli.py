@@ -1,6 +1,5 @@
-# Entry point for `uvx --from git+https://github.com/kibotu/proxy-lab.sh proxy-lab`.
-# The actual work stays in android/ and ios/ — this only dispatches and passes
-# the domains file through.
+# CLI entry point. The platform scripts do the work; this only dispatches them
+# and passes the optional domains file through the environment.
 import argparse
 import os
 from pathlib import Path

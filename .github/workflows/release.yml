@@ -34,7 +34,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-run of this job (e.g. after a partial failure): replace artifacts.
+            # Replace artifacts when re-running after a partial failure.
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* --verify-tag --generate-notes --title "$TAG"
@@ -42,5 +42,5 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # Same re-run story as the GitHub release above.
+          # Do not fail if the PyPI release already exists.
           skip-existing: true
