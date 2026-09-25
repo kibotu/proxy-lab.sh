@@ -1,5 +1,5 @@
-# Host suffixes logged as [local_router] … — read by local_router.py,
-# shared by android/ and ios/. Leading dot = subdomains only;
-# without it ("example.com") the apex matches too.
+# Host suffixes logged as [local_router] by local_router.py.
+# Matching is literal: a leading dot is safest for subdomains; without one,
+# "acme.dev" also matches names such as "notacme.dev".
 domains:
   - ".example.com"

@@ -34,12 +34,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
+      - name: verify iOS local-mode arguments
+        run: |
+          # A fake host binary provides an argv-only check without starting the extension.
+          fakebin="$(mktemp -d)"
+          args="$RUNNER_TEMP/mitmdump-args"
+          trap 'rm -rf "$fakebin" "$args"' EXIT
+          cat >"$fakebin/mitmdump" <<'EOF'
+          #!/usr/bin/env bash
+          if [ "${1:-}" = "--version" ]; then
+            printf 'Mitmproxy: 12.0.0\n'
+            exit 0
+          fi
+          printf '%s\n' "$@" >"$MITMDUMP_ARGS"
+          EOF
+          chmod +x "$fakebin/mitmdump"
+          MITMDUMP_ARGS="$args" PATH="$fakebin:$PATH" \
+            uvx --from . proxy-lab start ios
+          grep -Fxq -- '--mode' "$args"
+          grep -Fxq -- 'local:Simulator' "$args"
+          grep -Fxq -- '--showhost' "$args"
+          ! grep -Fxq -- '--listen-port' "$args"
       - name: start proxy, verify routing
         run: |
           log=proxy.log
 
-          # through uvx, so the packaged entry point is what CI exercises
-          uvx --from . proxy-lab start ios >"$log" 2>&1 &
+          # The local redirector needs interactive macOS approval. Check its
+          # arguments above; use regular mode here for the headless smoke test.
+          uv tool run --from 'mitmproxy@latest' mitmdump \
+            --listen-host 0.0.0.0 \
+            --listen-port "$PORT" \
+            --set ssl_insecure=true \
+            -s "$GITHUB_WORKSPACE/local_router.py" >"$log" 2>&1 &
           proxy=$!
           trap 'kill "$proxy" 2>/dev/null || true' EXIT
 
@@ -49,8 +75,8 @@ jobs:
             exit 1
           }
 
-          # Cold start can download mitmproxy via uv; the first successful
-          # fetch through the proxy is the readiness signal.
+          # The first successful fetch is the readiness signal, including a
+          # cold start while uv downloads mitmproxy.
           ready=""
           for _ in $(seq 1 120); do
             curl -sf --max-time 15 -o /dev/null -x "http://127.0.0.1:$PORT" http://www.example.com/ && {

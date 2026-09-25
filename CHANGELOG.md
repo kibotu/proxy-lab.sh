@@ -19,3 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow: pushing a tag shaped `X.Y.Z` (no `v` prefix) builds the
   wheel and sdist at that version and publishes a GitHub Release
   (`.github/workflows/release.yml`).
+
+### Changed
+
+- The iOS launcher now uses mitmproxy's macOS local-capture mode with the
+  `Simulator` process filter and `--showhost`; it does not boot a simulator.
+  The filter is intended to cover simulators launched from Xcode or Device Hub,
+  without macOS or app proxy settings.
+- Both launchers prefer a host `mitmdump` and fall back to uv's
+  `mitmproxy@latest` resolver when one is not installed. Preflight logs the
+  selected version and, when the network check is available, reports a newer
+  stable release on PyPI.
