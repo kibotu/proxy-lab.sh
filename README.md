@@ -11,16 +11,16 @@
 **See your app's HTTPS traffic with one command.** proxy-lab.sh starts [mitmproxy](https://www.mitmproxy.org/) for the **Android emulator** and **iOS Simulator**. It avoids `/system` remounts and macOS proxy settings; certificate setup remains explicit where the platform requires it.
 
 ```bash
-# iOS, from this checkout
-uvx --from . proxy-lab start ios
+# iOS
+uvx proxy-lab start ios
 
-# Android, from this checkout
-uvx --from . proxy-lab start android
+# Android
+uvx proxy-lab start android
 ```
 
-These commands run this checkout. For a published release, use
-`uvx proxy-lab==X.Y.Z start ios` (or `android`). Pinning the wrapper does not
-pin mitmproxy.
+These commands install the published release. From a checkout, use
+`uvx --from . proxy-lab start ios` (or `android`) to run the current source.
+Pinning the wrapper does not pin mitmproxy.
 
 ![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.png)
 
@@ -82,7 +82,7 @@ Point to it from the `<application>` tag in `AndroidManifest.xml`:
 **2. Start the proxy:**
 
 ```bash
-uvx --from . proxy-lab start android
+uvx proxy-lab start android
 ```
 
 The script checks your tools, reuses a running emulator or boots one, installs the mitmproxy CA into the user trust store, and sets the emulator proxy to `10.0.2.2:$PORT` (default `8080`). The first CA install reboots the emulator once per AVD.
@@ -100,7 +100,7 @@ The script checks your tools, reuses a running emulator or boots one, installs t
 **2. Start the proxy:**
 
 ```bash
-uvx --from . proxy-lab start ios
+uvx proxy-lab start ios
 ```
 
 **3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. If macOS has not approved the redirector yet, approve the prompt. Local capture is outbound-only; no system or app proxy setting is required. If you previously configured a manual system proxy, turn it off so it does not duplicate the capture path.
@@ -132,7 +132,7 @@ Entries are literal suffix matches. A leading dot is safest for subdomains; with
 Pass the file as the last argument:
 
 ```bash
-uvx --from . proxy-lab start android my-domains.yml
+uvx proxy-lab start android my-domains.yml
 ```
 
 Without an argument you get the [bundled `domains.yaml`](domains.yaml), which lists `.example.com` only. Keep a custom file with the project if the team should share the same filter.
@@ -155,7 +155,7 @@ Environment variables cover the rest:
 | `PROXY_LAB_CONFIG` | bundled `domains.yaml` | Path to your domains file. Same effect as the argument above. |
 
 ```bash
-PORT=8081 AVD=Pixel_10a uvx --from . proxy-lab start android
+PORT=8081 AVD=Pixel_10a uvx proxy-lab start android
 ```
 
 If you run this daily from a checkout, install the command once:
@@ -165,7 +165,7 @@ uv tool install .
 proxy-lab start android
 ```
 
-For a published release, use `uv tool install --force proxy-lab==X.Y.Z`.
+For the published release, use `uv tool install --force proxy-lab`.
 
 ## Run from a clone
 
@@ -256,7 +256,7 @@ For a GUI or broader device support, use [HTTP Toolkit](https://httptoolkit.com/
 ## Versions and releases
 
 - **mitmproxy** uses the host `mitmdump` when available. Otherwise the scripts request the intentionally unpinned `mitmproxy@latest` through uv. Preflight logs the resolved version and, when `curl` is available, queries PyPI for a newer release.
-- **proxy-lab.sh** is pinned by you: `proxy-lab==X.Y.Z` in the `uvx` command. Pinning the wrapper does not pin mitmproxy; put the command in your project README or a Makefile when the team needs one project version.
+- **proxy-lab.sh** resolves the published package by name. Pin the wrapper yourself when the team needs reproducibility; pinning it does not pin mitmproxy, so put the command in your project README or Makefile.
 - Tags are `X.Y.Z`, with no `v` prefix. A tag push builds the wheel and sdist at that version and publishes both a [GitHub Release](https://github.com/kibotu/proxy-lab.sh/releases) and the same artifacts to [PyPI](https://pypi.org/project/proxy-lab/). [CHANGELOG.md](CHANGELOG.md) has the per-version detail.
 
 ## Project layout
