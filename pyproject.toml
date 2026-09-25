@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "proxy-lab"
-version = "0.1.0"
+version = "2.0.0"
 description = "One command to see your app's HTTPS traffic: a mitmproxy setup for the Android emulator and the iOS simulator."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
-# mitmproxy runs from a host `mitmdump` when available; otherwise the scripts
-# request the latest compatible release through uv.
-dependencies = []
+# mitmproxy itself is selected by the launcher. ruamel.yaml is needed by the
+# packaged configuration loader and by the addon loaded by mitmproxy.
+dependencies = ["ruamel.yaml>=0.18.6"]
 
 [project.scripts]
 proxy-lab = "proxy_lab.cli:main"
@@ -26,3 +26,6 @@ packages = ["proxy_lab"]
 "ios" = "proxy_lab/ios"
 "local_router.py" = "proxy_lab/local_router.py"
 "domains.yaml" = "proxy_lab/domains.yaml"
+"proxy_lab/common.sh" = "proxy_lab/common.sh"
+"proxy_lab/control.sh" = "proxy_lab/control.sh"
+"examples" = "proxy_lab/examples"

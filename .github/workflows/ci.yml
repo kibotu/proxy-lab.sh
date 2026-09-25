@@ -19,7 +19,46 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
-        run: shellcheck android/start-proxy.sh ios/start-proxy.sh
+        run: shellcheck -e SC1091 android/start-proxy.sh ios/start-proxy.sh proxy_lab/common.sh proxy_lab/control.sh
+
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: unit and shell integration tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: build and install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/proxy-lab-dist"
+          uv build --out-dir "$dist"
+          venv="$RUNNER_TEMP/proxy-lab-venv"
+          uv venv "$venv"
+          uv pip install --python "$venv/bin/python" "$dist"/*.whl
+          "$venv/bin/proxy-lab" --version
+          "$venv/bin/proxy-lab" --help >/dev/null
+          python3 - "$dist"/*.whl <<'PY'
+          import sys
+          import zipfile
+
+          wheel = sys.argv[1]
+          required = {
+              "proxy_lab/android/start-proxy.sh",
+              "proxy_lab/ios/start-proxy.sh",
+              "proxy_lab/common.sh",
+              "proxy_lab/control.sh",
+              "proxy_lab/config.py",
+              "proxy_lab/local_router.py",
+              "proxy_lab/domains.yaml",
+          }
+          with zipfile.ZipFile(wheel) as archive:
+              missing = required.difference(archive.namelist())
+          if missing:
+              raise SystemExit(f"wheel is missing: {sorted(missing)}")
+          PY
 
   smoke:
     name: proxy smoke (${{ matrix.os }})
@@ -46,14 +85,26 @@ jobs:
             printf 'Mitmproxy: 12.0.0\n'
             exit 0
           fi
+          if [ "${1:-}" = "--listen-port" ] && [ "${2:-}" = "0" ]; then
+            mkdir -p "$HOME/.mitmproxy"
+            : >"$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+          fi
           printf '%s\n' "$@" >"$MITMDUMP_ARGS"
           EOF
-          chmod +x "$fakebin/mitmdump"
+          cat >"$fakebin/xcrun" <<'EOF'
+          #!/usr/bin/env bash
+          if [ "${1:-}" = "simctl" ] && [ "${2:-}" = "list" ]; then
+            printf '%s\n' '== Devices =='
+          fi
+          exit 0
+          EOF
+          chmod +x "$fakebin/mitmdump" "$fakebin/xcrun"
           MITMDUMP_ARGS="$args" PATH="$fakebin:$PATH" \
-            uvx --from . proxy-lab start ios
+            uvx --from . proxy-lab start ios --script examples/modify_response.py
           grep -Fxq -- '--mode' "$args"
           grep -Fxq -- 'local:Simulator' "$args"
           grep -Fxq -- '--showhost' "$args"
+          grep -Fq -- 'modify_response.py' "$args"
           ! grep -Fxq -- '--listen-port' "$args"
       - name: start proxy, verify routing
         run: |

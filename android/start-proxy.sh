@@ -12,94 +12,52 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROUTER="$(cd "$SCRIPT_DIR/.." && pwd)/local_router.py"
-CONFIG="${PROXY_LAB_CONFIG:-$(cd "$SCRIPT_DIR/.." && pwd)/domains.yaml}"
-PORT="${PORT:-8080}"
-DEVICE_PROXY="10.0.2.2:${PORT}" # 10.0.2.2 = the host, from the emulator's view
-CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
-USER_CA_DIR="/data/misc/user/0/cacerts-added"
-BOOT_TIMEOUT="${BOOT_TIMEOUT:-240}"
-LOCK="${TMPDIR:-/tmp}/start-proxy-${PORT}.lock"
-EMULATOR_LOG=""
-
-# A later run overwrites this. cleanup() clears the device proxy only when no
-# live launcher remains recorded in the lock file, avoiding a handoff race.
-printf '%s\n' "$$" >"$LOCK"
-
-info() { printf '  %s %-11s %s\n' "$1" "$2" "$3"; }
-
-fail() {
-  local label="$1" msg="$2" hint
-  shift 2
-  printf '  ✗ %-11s %s\n' "$label" "$msg" >&2
-  for hint in "$@"; do printf '      ↳ %s\n' "$hint" >&2; done
-  exit 1
-}
-
-# Prefer a host binary. The @latest spec asks uv to refresh its cached tool.
-if command -v mitmdump >/dev/null 2>&1; then
-  MITMDUMP=(mitmdump)
-  MITMPROXY_SOURCE="host mitmdump"
-elif command -v uv >/dev/null 2>&1; then
-  MITMDUMP=(uv tool run --from 'mitmproxy@latest' mitmdump)
-  MITMPROXY_SOURCE="uv latest"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -f "$SCRIPT_DIR/../common.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/../common.sh"
 else
-  fail 'mitmproxy' 'mitmdump not found and uv is not installed — brew install --cask mitmproxy or brew install uv'
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/../proxy_lab/common.sh"
 fi
 
-mitmproxy_version() {
-  "${MITMDUMP[@]}" --version 2>/dev/null |
-    sed -nE 's/^Mitmproxy( version)?:[[:space:]]*([^[:space:]]+).*/\2/p' |
-    head -n 1
-}
+ROUTER="$PROJECT_DIR/local_router.py"
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
+PORT="${PORT:-8080}"
+AVD="${AVD:-}"
+BOOT_TIMEOUT="${BOOT_TIMEOUT:-240}"
+SERIAL="${SERIAL:-${ANDROID_SERIAL:-}}"
+UDID="${UDID:-}"
+TRUST_ONLY=0
+CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+USER_CA_DIR="/data/misc/user/0/cacerts-added"
+EMULATOR_LOG=""
+PROXY_PID=""
+STATE_ACQUIRED=0
+STATE_DIR=""
 
-latest_mitmproxy_version() {
-  command -v curl >/dev/null 2>&1 || return 1
-  curl -fsSL --max-time 5 https://pypi.org/pypi/mitmproxy/json 2>/dev/null |
-    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-    head -n 1
-}
-
-version_is_older() {
-  [ "$1" != "$2" ] &&
-    [ "$1" = "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" ]
-}
-
-check_mitmproxy_version() {
-  local current latest
-  current="$(mitmproxy_version || true)"
-  [ -n "$current" ] ||
-    fail 'mitmproxy' "could not run ${MITMDUMP[*]} --version" \
-      "check: ${MITMDUMP[*]} --version" \
-      'https://docs.mitmproxy.org/stable/'
-
-  info '✓' 'mitmproxy' "$current via $MITMPROXY_SOURCE"
-  latest="$(latest_mitmproxy_version || true)"
-  if [ -n "$latest" ] && version_is_older "$current" "$latest"; then
-    info 'i' 'mitmproxy' "newer version available: $latest — https://pypi.org/project/mitmproxy/"
-  fi
-}
-
-find_emulator() {
-  adb devices | awk '$2 == "device" && $1 ~ /^emulator-/ { print $1; exit }'
-}
-
-wait_boot() {
-  local deadline=$((SECONDS + BOOT_TIMEOUT))
-  until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
-    [ "$SECONDS" -lt "$deadline" ] || fail 'emulator' "not finished booting after ${BOOT_TIMEOUT}s" \
-      'Watch the emulator window, check: adb devices' \
-      "Log: ${EMULATOR_LOG:-n/a}"
-    sleep 2
+configure_python_path
+parse_launcher_args "$@"
+validate_common_files
+DEVICE_PROXY="10.0.2.2:${PORT}"
+[ -z "$UDID" ] || fail 'arguments' '--udid is only valid for iOS'
+[ "$TRUST_ONLY" -eq 0 ] || fail 'arguments' '--trust-only is only valid for iOS'
+require_config_file
+if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
+  for script in "${ADDON_SCRIPTS[@]}"; do
+    [ -f "$script" ] || fail 'addon' "missing: $script"
   done
-}
+fi
+
+select_mitmproxy
 
 preflight_tools() {
   local missing=() hints=() c warm_pid t
   for c in adb openssl lsof; do
     command -v "$c" >/dev/null 2>&1 || missing+=("$c")
   done
-  if [ ${#missing[@]} -gt 0 ]; then
+  if [ "${#missing[@]}" -gt 0 ]; then
     for c in "${missing[@]}"; do
       # shellcheck disable=SC2016 # hint is copy-paste text — $PATH must stay literal
       case "$c" in
@@ -109,19 +67,25 @@ preflight_tools() {
     done
     fail 'tools' "missing: ${missing[*]}" "${hints[@]}"
   fi
-  [ -f "$ROUTER" ] ||
-    fail 'tools' 'local_router.py missing (repo root)' 'use a complete checkout of this repo'
-  [ -f "$CONFIG" ] ||
-    fail 'tools' "config missing: $CONFIG" 'use a complete checkout of this repo'
-  # Warm the selected executable before boot; this also absorbs the first
-  # uv download. Announce it only when startup is actually slow.
+  [ -f "$ROUTER" ] || fail 'tools' 'local_router.py missing (complete checkout required)'
+  if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
+    for script in "${ADDON_SCRIPTS[@]}"; do
+      [ -f "$script" ] || fail 'tools' "addon missing: $script"
+    done
+  fi
+
+  # Warm the selected executable before boot; this also absorbs the first uv
+  # download. Announce it only when startup is actually slow.
   "${MITMDUMP[@]}" --version >/dev/null 2>&1 &
   warm_pid=$!
   t=0
-  while kill -0 "$warm_pid" 2>/dev/null && [ "$t" -lt 15 ]; do sleep 0.1; t=$((t + 1)); done
+  while kill -0 "$warm_pid" 2>/dev/null && [ "$t" -lt 150 ]; do
+    sleep 0.1
+    t=$((t + 1))
+  done
   if kill -0 "$warm_pid" 2>/dev/null; then
-    if [ "$MITMPROXY_SOURCE" = "uv latest" ]; then
-      info '…' 'mitmproxy' 'resolving latest via uv'
+    if [ "$MITMPROXY_SOURCE" != "host mitmdump" ]; then
+      info '…' 'mitmproxy' "resolving $MITMPROXY_SOURCE"
     else
       info '…' 'mitmproxy' 'host mitmdump — starting'
     fi
@@ -134,21 +98,25 @@ preflight_tools() {
   info '✓' 'tools' 'adb, openssl, lsof'
 }
 
-ensure_host_ca() {
-  if [ ! -f "$CERT" ]; then
-    info '…' 'host CA' 'generating ~/.mitmproxy (first run)'
-    # A mitmproxy command creates the CA on startup; port 0 avoids conflicts.
-    "${MITMDUMP[@]}" --listen-port 0 >/dev/null 2>&1 &
-    local gen=$!
-    for _ in {1..25}; do [ -f "$CERT" ] && break; sleep 0.2; done
-    kill "$gen" 2>/dev/null || true
-    wait "$gen" 2>/dev/null || true
-    [ -f "$CERT" ] || fail 'host CA' 'could not generate the mitmproxy CA' \
-      "Run once: ${MITMDUMP[*]}" \
-      'https://docs.mitmproxy.org/stable/concepts/certificates/'
+find_emulator() {
+  if [ -n "$SERIAL" ]; then
+    adb devices | awk -v selected="$SERIAL" '$1 == selected && $2 == "device" { found=1 } END { exit(found ? 0 : 1) }' ||
+      fail 'emulator' "serial is not running: $SERIAL" \
+        'start the emulator first or omit --serial to boot an AVD'
+    printf '%s' "$SERIAL"
+    return
   fi
-  # shellcheck disable=SC2088 # display path — the literal ~ is what we mean
-  info '✓' 'host CA' '~/.mitmproxy/mitmproxy-ca-cert.pem'
+  adb devices | awk '$2 == "device" && $1 ~ /^emulator-/ { print $1; exit }'
+}
+
+wait_boot() {
+  local deadline=$((SECONDS + BOOT_TIMEOUT))
+  until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail 'emulator' "not finished booting after ${BOOT_TIMEOUT}s" \
+      'Watch the emulator window, check: adb devices' \
+      "Log: ${EMULATOR_LOG:-n/a}"
+    sleep 2
+  done
 }
 
 boot_emulator() {
@@ -164,6 +132,7 @@ boot_emulator() {
       info '…' 'emulator' "waiting for $pending"
       wait_boot
       info '✓' 'emulator' "$pending ready"
+      serial="$pending"
     else
       # shellcheck disable=SC2016 # hint is copy-paste text — $PATH must stay literal
       command -v emulator >/dev/null 2>&1 || fail 'emulator' 'not on PATH' \
@@ -181,7 +150,7 @@ boot_emulator() {
       EMULATOR_LOG="${TMPDIR:-/tmp}/emulator-${avd}.log"
       start=$SECONDS
       info '…' 'emulator' "booting $avd"
-      { set -m; } 2>/dev/null # own process group, so Ctrl-C doesn't kill the emulator
+      { set -m; } 2>/dev/null
       emulator -avd "$avd" >"$EMULATOR_LOG" 2>&1 &
       { set +m; } 2>/dev/null
       serial=''
@@ -198,6 +167,9 @@ boot_emulator() {
       info '✓' 'emulator' "$avd booted in $((SECONDS - start))s"
     fi
   fi
+  SERIAL="$serial"
+  state_write serial "$serial"
+
   # Root is only needed to install the CA into the user trust store.
   root_out="$(adb root 2>&1 || true)"
   case "$root_out" in
@@ -215,6 +187,7 @@ ensure_device_ca() {
   remote="$USER_CA_DIR/${hash}.0"
   if adb shell "test -f $remote" 2>/dev/null; then
     info '✓' 'device CA' "${hash}.0 in user store"
+    state_write ca_hash "$hash"
     return 0
   fi
   info '…' 'device CA' "installing ${hash}.0 — one reboot, once per AVD"
@@ -223,22 +196,38 @@ ensure_device_ca() {
   out="$(adb push "$CERT" "$remote" 2>&1)" ||
     fail 'device CA' "could not push ${hash}.0" "${out##*$'\n'}"
   out="$(adb shell "chmod 644 $remote && restorecon $remote $USER_CA_DIR" 2>&1)" || {
-    adb shell "rm -f $remote" >/dev/null 2>&1 || true # never leave an unlabeled cert behind
+    adb shell "rm -f $remote" >/dev/null 2>&1 || true
     fail 'device CA' 'permissions/SELinux label failed (rolled back)' "${out##*$'\n'}"
   }
   adb reboot
   wait_boot
-  # adbd drops back to shell after reboot; wait before reading the user store.
   adb root >/dev/null 2>&1 || true
   adb wait-for-device
   adb shell "test -f $remote" 2>/dev/null ||
     fail 'device CA' 'cert did not survive reboot' "check: adb root && adb shell ls $USER_CA_DIR"
   info '✓' 'device CA' "${hash}.0 trusted"
+  state_write ca_hash "$hash"
+}
+
+capture_device_proxy() {
+  local current
+  if ! current="$(adb shell settings get global http_proxy 2>/dev/null | tr -d '\r')"; then
+    fail 'proxy' 'could not read the existing Android proxy setting' \
+      'check: adb shell settings get global http_proxy'
+  fi
+  if [ -z "$current" ] || [ "$current" = "null" ]; then
+    state_write previous_proxy '__PROXY_LAB_NULL__'
+  else
+    state_write previous_proxy "$current"
+  fi
 }
 
 set_device_proxy() {
   local current
-  current="$(adb shell settings get global http_proxy 2>/dev/null | tr -d '\r')" || current=""
+  if ! current="$(adb shell settings get global http_proxy 2>/dev/null | tr -d '\r')"; then
+    fail 'proxy' 'could not read the Android proxy setting before changing it'
+  fi
+
   if [ "$current" = "$DEVICE_PROXY" ]; then
     info '✓' 'proxy' "$DEVICE_PROXY"
   else
@@ -249,60 +238,56 @@ set_device_proxy() {
 }
 
 free_port() {
-  local pid args pids
-  local stale=() foreign=()
+  local pids pid args
   pids="$(lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
-  while IFS= read -r pid; do
-    [ -n "$pid" ] || continue
-    args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-    # This is a command-line heuristic, not proof that this script owns the port.
-    case "$args" in
-      *mitmdump*) stale+=("$pid") ;;
-      *) foreign+=("$pid ${args:-unknown}") ;;
-    esac
-  done <<<"$pids"
-  if [ ${#foreign[@]} -gt 0 ]; then
-    fail "port $PORT" "used by: ${foreign[*]}" \
-      'Stop that process, or run: PORT=<other> ./android/start-proxy.sh'
-  fi
-  if [ ${#stale[@]} -gt 0 ]; then
-    for pid in "${stale[@]}"; do kill "$pid" 2>/dev/null || true; done
-    for _ in {1..15}; do # give them a moment before forcing
-      lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
-      sleep 0.2
+  if [ -n "$pids" ]; then
+    for pid in $pids; do
+      args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+      fail "port $PORT" "already in use by PID $pid (${args:-unknown})" \
+        'Stop the recorded proxy-lab session with: proxy-lab stop android' \
+        'or choose another PORT'
     done
-    for pid in "${stale[@]}"; do kill -9 "$pid" 2>/dev/null || true; done
-    lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 &&
-      fail "port $PORT" 'still busy after stopping stale proxies' "try: lsof -nP -iTCP:$PORT"
-    info '✓' "port $PORT" "stopped ${#stale[@]} mitmdump process(es)"
-  else
-    info '✓' "port $PORT" 'free'
   fi
+  info '✓' "port $PORT" 'free'
 }
 
 cleanup() {
-  trap - EXIT INT TERM
-  kill "$PROXY_PID" 2>/dev/null || true
-  wait "$PROXY_PID" 2>/dev/null || true
-  local owner=''
-  owner="$(cat "$LOCK" 2>/dev/null || true)"
-  if [ -z "$owner" ] || [ "$owner" = "$$" ] || ! kill -0 "$owner" 2>/dev/null; then
-    adb shell settings delete global http_proxy >/dev/null 2>&1 || true
-    info '✓' 'mitmdump' 'stopped — device proxy cleared'
-  else
-    info '✓' 'mitmdump' "stopped — instance $owner is still running; device proxy left set"
+  trap - EXIT INT TERM HUP
+  local restored=1
+  if [ -n "$PROXY_PID" ]; then
+    kill "$PROXY_PID" 2>/dev/null || true
+    wait "$PROXY_PID" 2>/dev/null || true
+  fi
+  if [ "$STATE_ACQUIRED" -eq 1 ]; then
+    if ! state_restore_android_proxy "$STATE_DIR"; then
+      restored=0
+      printf '  ! %-11s %s\n' 'cleanup' 'could not restore the Android proxy; run: proxy-lab reset android' >&2
+    fi
+    if [ "$restored" -eq 1 ]; then
+      state_release
+    fi
+  fi
+  if [ "$restored" -eq 1 ] && [ -n "$PROXY_PID" ]; then
+    info '✓' 'mitmdump' 'stopped — device proxy restored'
   fi
 }
 
 start_proxy() {
-  # Local debugging only: this disables upstream certificate verification.
-  "${MITMDUMP[@]}" --listen-host 0.0.0.0 --listen-port "$PORT" --set ssl_insecure=true \
-    -s "$ROUTER" &
+  local up=''
+  mitmproxy_addon_args
+  if [ "${#MITMPROXY_ADDON_ARGS[@]}" -gt 0 ]; then
+    "${MITMDUMP[@]}" --listen-host 0.0.0.0 --listen-port "$PORT" --set ssl_insecure=true \
+      -s "$ROUTER" "${MITMPROXY_ADDON_ARGS[@]}" &
+  else
+    "${MITMDUMP[@]}" --listen-host 0.0.0.0 --listen-port "$PORT" --set ssl_insecure=true \
+      -s "$ROUTER" &
+  fi
   PROXY_PID=$!
+  state_write proxy_pid "$PROXY_PID"
   trap cleanup EXIT
   trap 'cleanup; exit 130' INT
   trap 'cleanup; exit 143' TERM
-  local up=''
+  trap 'cleanup; exit 129' HUP
   for _ in {1..20}; do
     lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && { up=1; break; }
     kill -0 "$PROXY_PID" 2>/dev/null || break
@@ -318,8 +303,14 @@ start_proxy() {
 }
 
 preflight_tools
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+state_acquire android "$PORT"
 ensure_host_ca
 boot_emulator
+capture_device_proxy
 ensure_device_ca
 free_port
 set_device_proxy

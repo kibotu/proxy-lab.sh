@@ -5,90 +5,112 @@
 # The process filter is intended to cover both launch paths. No proxy settings
 # or fixed port are needed.
 # Stop with Ctrl-C (or kill this script).
-#
-#   ./ios/start-proxy.sh
-#
-# The first run may ask you to allow mitmproxy's network extension.
-# HTTPS interception still requires the simulator to trust the CA:
-# http://mitm.it
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROUTER="$(cd "$SCRIPT_DIR/.." && pwd)/local_router.py"
-CONFIG="${PROXY_LAB_CONFIG:-$(cd "$SCRIPT_DIR/.." && pwd)/domains.yaml}"
-# Local mode is available in mitmproxy 10.1.5+.
-MITMPROXY_MIN_LOCAL_VERSION="10.1.5"
-
-info() { printf '  %s %-11s %s\n' "$1" "$2" "$3"; }
-
-fail() {
-  local label="$1" msg="$2" hint
-  shift 2
-  printf '  ✗ %-11s %s\n' "$label" "$msg" >&2
-  for hint in "$@"; do printf '      ↳ %s\n' "$hint" >&2; done
-  exit 1
-}
-
-# Prefer a host binary. The @latest spec asks uv to refresh its cached tool.
-if command -v mitmdump >/dev/null 2>&1; then
-  MITMDUMP=(mitmdump)
-  MITMPROXY_SOURCE="host mitmdump"
-elif command -v uv >/dev/null 2>&1; then
-  MITMDUMP=(uv tool run --from 'mitmproxy@latest' mitmdump)
-  MITMPROXY_SOURCE="uv latest"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -f "$SCRIPT_DIR/../common.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/../common.sh"
 else
-  fail 'mitmproxy' 'mitmdump not found and uv is not installed — brew install --cask mitmproxy or brew install uv'
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/../proxy_lab/common.sh"
 fi
 
-mitmproxy_version() {
-  "${MITMDUMP[@]}" --version 2>/dev/null |
-    sed -nE 's/^Mitmproxy( version)?:[[:space:]]*([^[:space:]]+).*/\2/p' |
-    head -n 1
-}
+ROUTER="$PROJECT_DIR/local_router.py"
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+PORT=0
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+VALIDATE_PORT=0
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+BOOT_TIMEOUT=1
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+AVD=""
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+SERIAL=""
+UDID="${UDID:-}"
+TRUST_ONLY=0
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+MITMPROXY_MIN_LOCAL_VERSION="10.1.5"
+PROXY_PID=""
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+STATE_ACQUIRED=0
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+STATE_DIR=""
 
-latest_mitmproxy_version() {
-  command -v curl >/dev/null 2>&1 || return 1
-  curl -fsSL --max-time 5 https://pypi.org/pypi/mitmproxy/json 2>/dev/null |
-    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-    head -n 1
-}
+configure_python_path
+parse_launcher_args "$@"
+validate_common_files
+[ "$PORT" -eq 0 ] || fail 'arguments' '--port is only valid for Android'
+[ -z "$AVD" ] || fail 'arguments' '--avd is only valid for Android'
+[ "$BOOT_TIMEOUT" -eq 1 ] || fail 'arguments' '--boot-timeout is only valid for Android'
+[ -z "$SERIAL" ] || fail 'arguments' '--serial is only valid for Android'
+require_config_file
+if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
+  for script in "${ADDON_SCRIPTS[@]}"; do
+    [ -f "$script" ] || fail 'addon' "missing: $script"
+  done
+fi
 
-version_is_older() {
-  [ "$1" != "$2" ] &&
-    [ "$1" = "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" ]
-}
+select_mitmproxy
+check_mitmproxy_version "$MITMPROXY_MIN_LOCAL_VERSION"
 
-check_mitmproxy_version() {
-  local current latest
-  current="$(mitmproxy_version || true)"
-  [ -n "$current" ] ||
-    fail 'mitmproxy' "could not run ${MITMDUMP[*]} --version" \
-      "check: ${MITMDUMP[*]} --version" \
-      'https://docs.mitmproxy.org/stable/'
-  if version_is_older "$current" "$MITMPROXY_MIN_LOCAL_VERSION"; then
-    fail 'iOS mode' "mitmproxy $current is too old for local capture (need $MITMPROXY_MIN_LOCAL_VERSION+)" \
-      'upgrade mitmproxy, or remove it and install uv to use the latest fallback'
+cleanup() {
+  trap - EXIT INT TERM HUP
+  if [ -n "$PROXY_PID" ]; then
+    kill "$PROXY_PID" 2>/dev/null || true
+    wait "$PROXY_PID" 2>/dev/null || true
   fi
-
-  info '✓' 'mitmproxy' "$current via $MITMPROXY_SOURCE"
-  latest="$(latest_mitmproxy_version || true)"
-  if [ -n "$latest" ] && version_is_older "$current" "$latest"; then
-    info 'i' 'mitmproxy' "newer version available: $latest — https://pypi.org/project/mitmproxy/"
-  fi
+  state_release
 }
 
-[ -f "$ROUTER" ] ||
-  fail 'router' "missing: $ROUTER — use a complete checkout of this repo"
-[ -f "$CONFIG" ] ||
-  fail 'config' "missing: $CONFIG — use a complete checkout of this repo, or pass an existing domains file"
+if [ "$TRUST_ONLY" -eq 1 ]; then
+  ensure_host_ca
+  trust_status=0
+  trust_ios_certificate || trust_status=$?
+  if [ "$trust_status" -ne 0 ]; then
+    case "$trust_status" in
+      2) fail 'simulator' 'xcrun is not available' 'install Xcode and its command-line tools' ;;
+      3) fail 'simulator' 'no booted iOS Simulator found' 'boot one in Xcode or pass --udid' ;;
+      *) fail 'simulator' 'could not install the CA into the Simulator keychain' 'use mitm.it and trust the downloaded profile manually' ;;
+    esac
+  fi
+  exit 0
+fi
 
-check_mitmproxy_version
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+state_acquire ios 0
+ensure_host_ca
 
-# Local debugging only: this disables upstream certificate verification.
-# Replace this shell with the selected mitmdump command.
-exec "${MITMDUMP[@]}" \
-  --mode local:Simulator \
-  --showhost \
-  --set ssl_insecure=true \
-  -s "$ROUTER"
+trust_status=0
+trust_ios_certificate || trust_status=$?
+if [ "$trust_status" -ne 0 ]; then
+  info '!' 'simulator' 'automatic CA trust unavailable; use mitm.it in the booted Simulator'
+fi
+
+mitmproxy_addon_args
+if [ "${#MITMPROXY_ADDON_ARGS[@]}" -gt 0 ]; then
+  "${MITMDUMP[@]}" \
+    --mode local:Simulator \
+    --showhost \
+    --set ssl_insecure=true \
+    -s "$ROUTER" "${MITMPROXY_ADDON_ARGS[@]}" &
+else
+  "${MITMDUMP[@]}" \
+    --mode local:Simulator \
+    --showhost \
+    --set ssl_insecure=true \
+    -s "$ROUTER" &
+fi
+PROXY_PID=$!
+state_write proxy_pid "$PROXY_PID"
+info '✓' 'mitmdump' 'local:Simulator — Ctrl-C to stop'
+printf '\n'
+wait "$PROXY_PID"

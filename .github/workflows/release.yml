@@ -1,8 +1,7 @@
 name: Release
 
 # Tag push drives the release: tag 1.0.0 (no v prefix) → GitHub Release.
-# The tag is the source of truth — pyproject.toml takes its version from it,
-# so the built artifacts can never disagree with the tag.
+# The checked-in package version is the source of truth and must match the tag.
 on:
   push:
     tags:
@@ -24,8 +23,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - name: Set project version from tag
-        run: uv version --no-sync "$GITHUB_REF_NAME"
+      - name: Verify dependency lock
+        run: uv lock --check
+      - name: Verify tag matches project version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          project_version="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' pyproject.toml)"
+          test "$TAG" = "$project_version" || {
+            echo "tag $TAG does not match pyproject.toml version $project_version" >&2
+            exit 1
+          }
+          grep -Fq "## [$TAG]" CHANGELOG.md || {
+            echo "CHANGELOG.md has no released section for $TAG" >&2
+            exit 1
+          }
       - name: Build
         run: uv build
       - name: Publish GitHub Release

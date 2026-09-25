@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-25
+
+### Added
+
+- Owner-scoped session state with `status`, `stop`, `reset`, and `doctor` commands.
+- Automatic iOS Simulator CA installation through `simctl`, with manual fallback.
+- Strict configuration validation, URL redaction, repeatable user addons, and generic examples.
+- Unit, fake-tool, and packaged-wheel tests.
+
+### Changed
+
+- The release workflow now requires the Git tag to match the checked-in package version.
+- Android cleanup restores the exact proxy value that existed before the run and never kills an unknown listener.
+- Terminal-close (`SIGHUP`) cleanup now follows the same path as `Ctrl-C` and `SIGTERM`.
+
+## [1.1.1] - 2026-09-25
+
+### Changed
+
+- Documented the published `uvx proxy-lab` invocation.
+
 ## [1.1.0] - 2026-09-25
 
 ### Added
