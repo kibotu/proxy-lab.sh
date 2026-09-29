@@ -21,6 +21,7 @@ else
   source "$SCRIPT_DIR/../proxy_lab/common.sh"
 fi
 
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 ROUTER="$PROJECT_DIR/local_router.py"
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
