@@ -348,13 +348,22 @@ state_release() {
   STATE_ACQUIRED=0
 }
 
+android_device_ready() {
+  local serial="${1:-}"
+  [ -n "$serial" ] || return 1
+  command -v adb >/dev/null 2>&1 || return 1
+  adb devices | awk -v selected="$serial" '$1 == selected && $2 == "device" { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
+# 0: restored, or nothing was recorded
+# 1: the device answered but the restore failed, so the state must be kept
+# 2: the device is gone, so there is nothing left to restore it on
 state_restore_android_proxy() {
   local directory="$1" serial previous
   [ -f "$directory/previous_proxy" ] || return 0
   serial="$(state_read_from "$directory" serial)"
   previous="$(state_read_from "$directory" previous_proxy)"
-  [ -n "$serial" ] || return 1
-  command -v adb >/dev/null 2>&1 || return 1
+  android_device_ready "$serial" || return 2
 
   if [ -z "$previous" ] || [ "$previous" = "__PROXY_LAB_NULL__" ]; then
     adb -s "$serial" shell settings delete global http_proxy >/dev/null 2>&1 || return 1

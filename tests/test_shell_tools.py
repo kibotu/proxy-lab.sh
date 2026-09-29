@@ -278,6 +278,90 @@ fi
             self.assertIn("settings delete global http_proxy", log)
             self.assertFalse(state_dir.exists())
 
+    def test_reset_clears_stale_state_when_the_recorded_device_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "android-8080"
+            state_dir.mkdir()
+            (state_dir / "owner").write_text("999999\n", encoding="utf-8")
+            (state_dir / "platform").write_text("android\n", encoding="utf-8")
+            (state_dir / "serial").write_text("emulator-5554\n", encoding="utf-8")
+            (state_dir / "previous_proxy").write_text("10.0.0.1:8888\n", encoding="utf-8")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_adb = fake_bin / "adb"
+            fake_adb.write_text(
+                """#!/usr/bin/env bash
+if [ "$1" = devices ]; then
+  printf '%s\\n' 'List of devices attached'
+fi
+exit 1
+""",
+                encoding="utf-8",
+            )
+            fake_adb.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {"PATH": f"{fake_bin}:/usr/bin:/bin", "PROXY_LAB_STATE_DIR": str(root)}
+            )
+
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "android"],
+                env,
+            )
+
+            # No emulator to restore the proxy on, so reset must still release the
+            # stale state directory; otherwise start is blocked forever.
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("emulator-5554 is not reachable", result.stdout)
+            self.assertFalse(state_dir.exists())
+
+    def test_reset_keeps_state_but_still_clears_the_proxy_when_restore_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "android-8080"
+            state_dir.mkdir()
+            (state_dir / "owner").write_text("999999\n", encoding="utf-8")
+            (state_dir / "platform").write_text("android\n", encoding="utf-8")
+            (state_dir / "serial").write_text("emulator-5554\n", encoding="utf-8")
+            (state_dir / "previous_proxy").write_text("10.0.0.1:8888\n", encoding="utf-8")
+            adb_log = root / "adb.log"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_adb = fake_bin / "adb"
+            fake_adb.write_text(
+                """#!/usr/bin/env bash
+printf '%s\\n' \"$*\" >> \"$ADB_LOG\"
+case \"$*\" in
+  *devices*) printf '%s\\n' 'List of devices attached' 'emulator-5554 device'; exit 0 ;;
+  *'settings put global http_proxy'*) exit 1 ;;
+esac
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_adb.chmod(0o755)
+            adb_log.write_text("", encoding="utf-8")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "ADB_LOG": str(adb_log),
+                    "PROXY_LAB_STATE_DIR": str(root),
+                }
+            )
+
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "android"],
+                env,
+            )
+
+            # A reachable device that refuses the restore keeps the state for a
+            # retry, but the rest of reset must still run.
+            self.assertEqual(result.returncode, 1)
+            self.assertTrue(state_dir.exists())
+            self.assertIn("settings delete global http_proxy", adb_log.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

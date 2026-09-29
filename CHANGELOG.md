@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-29
+
+### Fixed
+
+- `reset`/`stop` no longer deadlock when the recorded emulator is gone. Restoring the
+  proxy previously failed hard whenever `adb` could not reach the device, which left
+  the stale state directory in place and blocked every following `start` behind a
+  "run `proxy-lab reset`" hint that ran the same failing path. An unreachable device
+  now releases the state, since a dead emulator takes its proxy setting with it.
+- `reset` no longer aborts on the first session it cannot fully restore: the remaining
+  sessions and the Android proxy sweep still run, and the exit status reports the
+  failure.
+
 ## [2.0.0] - 2026-09-25
 
 ### Added

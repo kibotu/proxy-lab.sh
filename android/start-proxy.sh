@@ -253,19 +253,28 @@ free_port() {
 
 cleanup() {
   trap - EXIT INT TERM HUP
-  local restored=1
+  local restored=1 restore_status=0 serial
   if [ -n "$PROXY_PID" ]; then
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
   fi
   if [ "$STATE_ACQUIRED" -eq 1 ]; then
-    if ! state_restore_android_proxy "$STATE_DIR"; then
-      restored=0
-      printf '  ! %-11s %s\n' 'cleanup' 'could not restore the Android proxy; run: proxy-lab reset android' >&2
-    fi
-    if [ "$restored" -eq 1 ]; then
-      state_release
-    fi
+    state_restore_android_proxy "$STATE_DIR" || restore_status=$?
+    case "$restore_status" in
+      0) state_release ;;
+      2)
+        # A dead emulator takes its proxy setting with it; keeping the state
+        # would only block the next start behind a device nobody can reach.
+        serial="$(state_read_from "$STATE_DIR" serial)"
+        printf '  ! %-11s %s is not reachable; state released, proxy not restored\n' \
+          'cleanup' "${serial:-the device}" >&2
+        state_release
+        ;;
+      *)
+        restored=0
+        printf '  ! %-11s %s\n' 'cleanup' 'could not restore the Android proxy; run: proxy-lab reset android' >&2
+        ;;
+    esac
   fi
   if [ "$restored" -eq 1 ] && [ -n "$PROXY_PID" ]; then
     info '✓' 'mitmdump' 'stopped — device proxy restored'

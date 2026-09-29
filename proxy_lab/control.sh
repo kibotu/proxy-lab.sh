@@ -101,7 +101,7 @@ status_one() {
 }
 
 stop_one() {
-  local directory="$1" owner waited=0
+  local directory="$1" owner waited=0 restore_status=0 serial
   owner="$(state_read_from "$directory" owner)"
   if state_pid_alive "$owner"; then
     if ! state_owner_matches "$directory"; then
@@ -129,10 +129,20 @@ stop_one() {
   fi
 
   if [ -f "$directory/platform" ] && [ "$(state_read_from "$directory" platform)" = "android" ]; then
-    state_restore_android_proxy "$directory" || {
-      printf '  ✗ %-11s could not restore the Android proxy; run reset explicitly\n' 'stop' >&2
-      return 1
-    }
+    state_restore_android_proxy "$directory" || restore_status=$?
+    case "$restore_status" in
+      0) ;;
+      2)
+        # The recorded device is gone; holding the state back would only block
+        # the next start behind a proxy nobody can restore.
+        serial="$(state_read_from "$directory" serial)"
+        info '!' 'stop' "${serial:-the recorded device} is not reachable; state released"
+        ;;
+      *)
+        printf '  ✗ %-11s could not restore the Android proxy; run reset explicitly\n' 'stop' >&2
+        return 1
+        ;;
+    esac
   fi
   rm -rf "$directory"
   printf '  ✓ %-11s stopped %s\n' 'stop' "$directory"
@@ -166,6 +176,10 @@ clear_android_proxy() {
   fi
   [ -n "$serial" ] || fail 'reset' 'no running emulator found' \
     'boot an emulator or pass --serial'
+  if ! android_device_ready "$serial"; then
+    info '!' 'reset' "$serial is not reachable; nothing to clear on the device"
+    return 0
+  fi
   adb -s "$serial" shell settings delete global http_proxy >/dev/null 2>&1 || true
   adb -s "$serial" shell settings delete global_http_proxy_host >/dev/null 2>&1 || true
   adb -s "$serial" shell settings delete global_http_proxy_port >/dev/null 2>&1 || true
@@ -306,12 +320,13 @@ case "$OPERATION" in
     ;;
   reset)
     found=0
+    result=0
     for platform in android ios; do
       selected_platform "$platform" || continue
       while IFS= read -r directory; do
         [ -n "$directory" ] || continue
         found=1
-        reset_one "$directory"
+        reset_one "$directory" || result=1
       done < <(state_directories "$platform")
     done
     if [ "$PLATFORM" = "android" ]; then
@@ -322,6 +337,7 @@ case "$OPERATION" in
       found=1
     fi
     [ "$found" -eq 1 ] || printf '%s\n' 'No proxy-lab sessions recorded.'
+    exit "$result"
     ;;
   doctor)
     run_doctor

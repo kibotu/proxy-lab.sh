@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "proxy-lab"
-version = "2.0.0"
+version = "2.0.1"
 description = "One command to see your app's HTTPS traffic: a mitmproxy setup for the Android emulator and the iOS simulator."
 readme = "README.md"
 license = "Apache-2.0"
