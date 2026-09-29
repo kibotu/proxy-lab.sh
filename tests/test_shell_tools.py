@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -194,7 +196,7 @@ esac
                     "PROXY_LAB_STATE_DIR": str(session_state),
                     "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
                     "PROXY_LAB_MITMDUMP": str(fake_bin / "mitmdump"),
-                    "PROXY_LAB_PYTHON": os.environ.get("PYTHON", "python3"),
+                    "PROXY_LAB_PYTHON": sys.executable,
                     "PORT": "18999",
                 }
             )
@@ -329,6 +331,181 @@ exit 0
             self.assertTrue(state_dir.exists())
             self.assertIn("not the recorded proxy-lab owner", result.stderr)
 
+    def test_status_json_is_parseable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "android-8080"
+            state_dir.mkdir()
+            # A path with a quote and a backslash must not break the JSON.
+            (state_dir / "owner").write_text("999999\n", encoding="utf-8")
+            (state_dir / "platform").write_text("android\n", encoding="utf-8")
+            (state_dir / "port").write_text("8080\n", encoding="utf-8")
+            (state_dir / "config").write_text('a"b\\c.yml\n', encoding="utf-8")
+
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "status", "--json"],
+                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sessions = json.loads(result.stdout)
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0]["state"], "stale")
+            self.assertEqual(sessions[0]["platform"], "android")
+            self.assertEqual(sessions[0]["config"], 'a"b\\c.yml')
+
+    def test_status_json_is_an_empty_array_without_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "status", "--json"],
+                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [])
+
+    def test_doctor_json_reports_the_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bin = Path(directory) / "bin"
+            fake_bin.mkdir()
+            fake_mitmproxy = fake_bin / "mitmdump"
+            fake_mitmproxy.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo 'Mitmproxy: 12.2.3'; exit 0; fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_mitmproxy.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "PROXY_LAB_STATE_DIR": directory,
+                    "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
+                    "PROXY_LAB_PYTHON": sys.executable,
+                }
+            )
+
+            result = self.run_command(
+                [
+                    "bash",
+                    str(ROOT / "proxy_lab" / "control.sh"),
+                    "doctor",
+                    "ios",
+                    "--json",
+                ],
+                env,
+            )
+
+            # The JSON document is the last line; the rest is human context.
+            report = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertIn("checks", report)
+            self.assertIn("ok", report)
+            self.assertTrue(any(c["name"] == "mitmproxy" for c in report["checks"]))
+
+    def test_doctor_exits_non_zero_when_a_check_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "bad.yml"
+            config.write_text("domains: not-a-list\n", encoding="utf-8")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": "/usr/bin:/bin",
+                    "PROXY_LAB_STATE_DIR": directory,
+                    "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_CONFIG": str(config),
+                    "PROXY_LAB_PYTHON": sys.executable,
+                    "PROXY_LAB_PYTHONPATH": str(ROOT),
+                }
+            )
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "doctor", "--json"],
+                env,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            report = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertFalse(report["ok"])
+            failed = [c for c in report["checks"] if c["status"] == "fail"]
+            self.assertTrue(any(c["name"] == "config" for c in failed))
+
+    def test_stop_json_reports_the_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "ios"
+            state_dir.mkdir()
+            # A live PID that is not a proxy-lab owner: stop must refuse it.
+            (state_dir / "owner").write_text(f"{os.getpid()}\n", encoding="utf-8")
+            (state_dir / "platform").write_text("ios\n", encoding="utf-8")
+
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "stop", "ios", "--json"],
+                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
+            )
+
+            self.assertEqual(result.returncode, 1)
+            report = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertEqual(report[0]["status"], "fail")
+            self.assertIn("not the recorded", report[0]["detail"])
+
+    def test_logs_reports_nothing_when_no_run_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "logs", "--json"],
+                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(json.loads(result.stdout), {"sessions": []})
+
+    def test_logs_prints_a_previously_written_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_dir = Path(directory) / "logs"
+            log_dir.mkdir()
+            log = log_dir / "ios-0.log"
+            log.write_text("[local_router] https://a.example.com/x\n", encoding="utf-8")
+
+            result = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "logs", "ios"],
+                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("[local_router] https://a.example.com/x", result.stdout)
+
+    def test_invalid_duration_is_rejected_with_the_arguments_code(self) -> None:
+        result = self.run_command(
+            [
+                "bash",
+                "-c",
+                (
+                    "set -euo pipefail; "
+                    f"PROJECT_DIR={str(ROOT)!r}; "
+                    f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
+                    "PORT=8080; VALIDATE_PORT=1; BOOT_TIMEOUT=240; "
+                    "DURATION=notanumber; validate_common_files"
+                ),
+            ],
+            os.environ.copy(),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("duration must be", result.stderr)
+
+    def test_unknown_log_format_is_rejected(self) -> None:
+        result = self.run_command(
+            [
+                "bash",
+                "-c",
+                (
+                    "set -euo pipefail; "
+                    f"PROJECT_DIR={str(ROOT)!r}; "
+                    f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
+                    "PORT=8080; VALIDATE_PORT=1; BOOT_TIMEOUT=240; "
+                    "LOG_FORMAT=xml; validate_common_files"
+                ),
+            ],
+            os.environ.copy(),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown log format", result.stderr)
+
     def test_reset_restores_recorded_android_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -454,6 +631,99 @@ exit 0
             self.assertEqual(result.returncode, 1)
             self.assertTrue(state_dir.exists())
             self.assertIn("settings delete global http_proxy", adb_log.read_text(encoding="utf-8"))
+
+    def test_detached_ios_run_is_stoppable_and_its_log_survives(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            home = root / "home"
+            fake_bin.mkdir()
+            home.mkdir()
+            fake_mitmproxy = fake_bin / "mitmdump"
+            fake_mitmproxy.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo 'Mitmproxy: 12.2.3'; exit 0; fi
+if [ "${1:-}" = "--listen-port" ] && [ "${2:-}" = 0 ]; then
+  mkdir -p "$HOME/.mitmproxy"
+  printf 'fake-certificate\\n' > "$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+  exit 0
+fi
+echo '[local_router] https://api.example.com/v1'
+exec sleep 300
+""",
+                encoding="utf-8",
+            )
+            fake_mitmproxy.chmod(0o755)
+            fake_xcrun = fake_bin / "xcrun"
+            fake_xcrun.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = simctl ]; then echo '    iPhone (SIM-1) (Booted)'; fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_xcrun.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "HOME": str(home),
+                    "PROXY_LAB_STATE_DIR": str(root / "state"),
+                    "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
+                    "PROXY_LAB_PYTHON": sys.executable,
+                }
+            )
+
+            # --detach must return promptly, with the proxy up behind it.
+            start = time.monotonic()
+            result = self.run_command(
+                ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--detach"], env
+            )
+            elapsed = time.monotonic() - start
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(elapsed, 60, "detached start blocked on the proxy")
+            self.assertIn("detached", result.stdout)
+
+            # status reports a running session and where its log lives.
+            status = self.run_command(
+                [
+                    "bash",
+                    str(ROOT / "proxy_lab" / "control.sh"),
+                    "status",
+                    "ios",
+                    "--json",
+                ],
+                env,
+            )
+            session = json.loads(status.stdout)[0]
+            self.assertEqual(session["state"], "running")
+            log = Path(session["log"])
+            self.assertTrue(log.is_file())
+
+            # stop must signal the owner and release the session.
+            stop = self.run_command(
+                [
+                    "bash",
+                    str(ROOT / "proxy_lab" / "control.sh"),
+                    "stop",
+                    "ios",
+                    "--json",
+                ],
+                env,
+            )
+            self.assertEqual(stop.returncode, 0, stop.stderr)
+            self.assertEqual(json.loads(stop.stdout)[0]["status"], "ok")
+
+            # The log outlives the session: a caller that just ran a test needs it.
+            after = self.run_command(
+                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "logs", "ios"], env
+            )
+            self.assertEqual(after.returncode, 0, after.stderr)
+            self.assertIn(
+                "[local_router] https://api.example.com/v1", after.stdout
+            )
 
 
 if __name__ == "__main__":

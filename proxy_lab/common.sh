@@ -7,6 +7,23 @@ if [ -n "${PROXY_LAB_COMMON_LOADED:-}" ]; then
 fi
 PROXY_LAB_COMMON_LOADED=1
 
+# Exit codes are part of the contract: a script can branch on the reason a run
+# failed without parsing English. Keep this table in sync with README.md.
+#   0 ok  1 unspecified  2 arguments  3 config/input  4 missing tool
+#   5 device/CA  6 port  7 mitmproxy  8 session state
+label_exit_code() {
+  case "$1" in
+    arguments) printf '2' ;;
+    config|addon|router) printf '3' ;;
+    tools) printf '4' ;;
+    emulator|root|device\ CA|host\ CA|simulator|proxy) printf '5' ;;
+    port*) printf '6' ;;
+    mitmproxy|mitmdump) printf '7' ;;
+    session|state|timeout) printf '8' ;;
+    *) printf '1' ;;
+  esac
+}
+
 info() {
   printf '  %s %-11s %s\n' "$1" "$2" "$3"
 }
@@ -18,7 +35,25 @@ fail() {
   for hint in "$@"; do
     printf '      ↳ %s\n' "$hint" >&2
   done
-  exit 1
+  exit "$(label_exit_code "$label")"
+}
+
+# Minimal JSON string escaping for the --json surfaces. These values are paths,
+# hostnames, and tool output; the control characters below are stripped rather
+# than escaped because no JSON reader wants them.
+json_escape() {
+  local value
+  value="$(printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037')"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_field() {
+  printf '  "%s": "%s"' "$1" "$(json_escape "$2")"
 }
 
 require_value() {
@@ -34,6 +69,15 @@ resolve_file() {
 parse_launcher_args() {
   local index resolved
   ADDON_SCRIPTS=()
+  DETACH="${DETACH:-0}"
+  DURATION="${DURATION:-}"
+  JSON_OUTPUT="${JSON_OUTPUT:-0}"
+  LOG_FORMAT="${LOG_FORMAT:-text}"
+  export PROXY_LAB_LOG_FORMAT="$LOG_FORMAT"
+
+  if [ -n "${PROXY_LAB_DURATION:-}" ]; then
+    DURATION="$PROXY_LAB_DURATION"
+  fi
 
   if [ -n "${PROXY_LAB_SCRIPTS:-}" ]; then
     while IFS= read -r script; do
@@ -85,6 +129,25 @@ parse_launcher_args() {
         TRUST_ONLY=1
         shift
         ;;
+      --detach)
+        # shellcheck disable=SC2034 # consumed by the launchers
+        DETACH=1
+        shift
+        ;;
+      --json)
+        JSON_OUTPUT=1
+        shift
+        ;;
+      --log-format)
+        require_value "$1" "${2-}"
+        LOG_FORMAT="$2"
+        shift 2
+        ;;
+      --duration)
+        require_value "$1" "${2-}"
+        DURATION="$2"
+        shift 2
+        ;;
       --)
         shift
         [ "$#" -eq 0 ] || fail 'arguments' "unexpected arguments: $*"
@@ -119,6 +182,18 @@ validate_common_files() {
     ''|*[!0-9]*) fail 'arguments' "BOOT_TIMEOUT must be a positive integer: ${BOOT_TIMEOUT:-}" ;;
   esac
   [ "$BOOT_TIMEOUT" -gt 0 ] 2>/dev/null || fail 'arguments' "BOOT_TIMEOUT must be greater than zero: $BOOT_TIMEOUT"
+
+  if [ -n "${DURATION:-}" ]; then
+    case "$DURATION" in
+      *[!0-9]*) fail 'arguments' "duration must be a positive integer of seconds: $DURATION" ;;
+    esac
+    [ "$DURATION" -gt 0 ] 2>/dev/null || fail 'arguments' "duration must be greater than zero: $DURATION"
+  fi
+
+  case "${LOG_FORMAT:-text}" in
+    text|jsonl) ;;
+    *) fail 'arguments' "unknown log format: ${LOG_FORMAT:-} (expected text or jsonl)" ;;
+  esac
 }
 
 try_select_mitmproxy() {
@@ -330,6 +405,14 @@ state_adopt_stale() {
   mkdir "$directory" 2>/dev/null
 }
 
+# Where a session's output is written. Deliberately outside the state directory:
+# `stop` removes the state directory, and a log that vanished with it would be
+# useless to the caller that just asked for it.
+log_path_for() {
+  local platform="$1" port="${2:-0}"
+  printf '%s/logs/%s-%s.log' "$(state_root)" "$platform" "$port"
+}
+
 state_acquire() {
   local platform="$1" port="${2:-0}" owner
   umask 077
@@ -365,6 +448,16 @@ state_acquire() {
   state_write port "$port"
   state_write config "${CONFIG:-${PROJECT_DIR:-.}/domains.yaml}"
   [ -z "${UDID:-}" ] || state_write udid "$UDID"
+  [ -z "${LOG_FORMAT:-}" ] || state_write log_format "$LOG_FORMAT"
+  [ -z "${DURATION:-}" ] || state_write duration "$DURATION"
+  # Record what is actually running, so `status` can report it. mitmproxy
+  # resolves unpinned by default, so this is the only version evidence.
+  if [ -n "${MITMDUMP+x}" ] && [ "${#MITMDUMP[@]}" -gt 0 ]; then
+    state_write mitmproxy "$(mitmproxy_version || true)"
+  fi
+  state_write mitmproxy_source "${MITMPROXY_SOURCE:-unknown}"
+  # `proxy-lab logs` finds the traffic through this path.
+  state_write log "$(log_path_for "$platform" "$port")"
   state_write started_at "$(date +%s)"
 }
 
@@ -373,6 +466,84 @@ state_release() {
   [ "$(state_read owner)" = "$$" ] || return 0
   rm -rf "$STATE_DIR"
   STATE_ACQUIRED=0
+}
+
+# Stop the proxy after a fixed number of seconds so a bounded run always exits.
+# Uses a watchdog subshell rather than a sleep in the foreground so the proxy
+# output keeps flowing while the timer runs.
+start_duration_watchdog() {
+  [ -n "${DURATION:-}" ] || return 0
+  (
+    sleep "$DURATION"
+    kill -TERM "$$" 2>/dev/null || true
+  ) &
+  # shellcheck disable=SC2034 # consumed by the launcher cleanup trap
+  DURATION_PID=$!
+}
+
+# Re-exec the launcher detached from the terminal, with output going to the
+# session log. The child re-runs the identical script, so preflight, CA install,
+# and cleanup behave exactly as they do in the foreground.
+run_detached() {
+  local script="$1" log="$2"
+  shift 2
+  mkdir -p "$(dirname "$log")"
+  : >"$log"
+  PROXY_LAB_DETACH_CHILD=1 \
+    nohup bash "$script" "$@" >>"$log" 2>&1 </dev/null &
+  DETACH_PID=$!
+  disown "$DETACH_PID" 2>/dev/null || true
+}
+
+# Parent side of --detach: hand off to a detached child and block only until the
+# session reports itself ready, or the child dies. Exits 0 on success so the
+# parent never continues into the run it just delegated; a caller that sees a
+# zero exit status can rely on the proxy being up.
+run_detach_handoff() {
+  local script="$1"
+  shift
+  [ "${DETACH:-0}" -eq 1 ] || return 0
+  # The child owns the real run and must not hand off a second time.
+  [ -n "${PROXY_LAB_DETACH_CHILD:-}" ] && return 0
+
+  local root log dir timeout deadline child_status port
+  root="$(state_root)"
+  if [ "$PLATFORM_NAME" = "android" ]; then
+    dir="$root/android-${PORT:-8080}"
+    port="${PORT:-8080}"
+  else
+    dir="$root/ios"
+    port=0
+  fi
+  log="$(log_path_for "$PLATFORM_NAME" "$port")"
+  timeout="${DETACH_READY_TIMEOUT:-600}"
+
+  run_detached "$script" "$log" "$@"
+  info '…' 'detached' "starting in the background (pid $DETACH_PID)"
+
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -f "$dir/ready" ]; then
+      info '✓' 'detached' "pid $DETACH_PID — log $log"
+      exit 0
+    fi
+    if ! kill -0 "$DETACH_PID" 2>/dev/null; then
+      child_status=0
+      wait "$DETACH_PID" 2>/dev/null || child_status=$?
+      tail -n 20 "$log" >&2
+      fail 'session' "the detached run exited before it was ready (status $child_status)" \
+        "full output: $log"
+    fi
+    sleep 0.2
+  done
+  fail 'timeout' "the detached run was not ready after ${timeout}s" \
+    "full output: $log"
+}
+
+# Child side: record readiness so the parent --detach caller can stop waiting.
+mark_session_ready() {
+  [ "${STATE_ACQUIRED:-0}" -eq 1 ] || return 0
+  state_write ready "$(date +%s)"
 }
 
 android_device_ready() {

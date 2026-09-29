@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proxy_lab.config import ConfigError, load_domains, matches_host, redact_url
+from proxy_lab.config import (
+    ConfigError,
+    load_domains,
+    matches_host,
+    redact_headers,
+    redact_url,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -45,6 +51,27 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             redact_url("https://example.com/a?token=secret&page=2"),
             "https://example.com/a?token=%3Cr%3E&page=2",
+        )
+
+    def test_redacts_credential_headers_and_keeps_the_rest(self) -> None:
+        headers = {
+            "Authorization": "Bearer hunter2",
+            "Cookie": "session=abc",
+            "X-Api-Key": "k-1",
+            "Accept": "application/json",
+            "User-Agent": "okhttp/5.0",
+        }
+        redacted = redact_headers(headers)
+        self.assertEqual(redacted["Authorization"], "<r>")
+        self.assertEqual(redacted["Cookie"], "<r>")
+        self.assertEqual(redacted["X-Api-Key"], "<r>")
+        self.assertEqual(redacted["Accept"], "application/json")
+        self.assertEqual(redacted["User-Agent"], "okhttp/5.0")
+        self.assertNotIn("hunter2", str(redacted))
+
+    def test_header_redaction_is_case_insensitive(self) -> None:
+        self.assertEqual(
+            redact_headers({"AUTHORIZATION": "Bearer x"}), {"AUTHORIZATION": "<r>"}
         )
 
 

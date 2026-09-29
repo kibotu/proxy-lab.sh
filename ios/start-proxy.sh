@@ -41,6 +41,11 @@ PROXY_PID=""
 STATE_ACQUIRED=0
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 STATE_DIR=""
+DURATION_PID=""
+# shellcheck disable=SC2034 # set by proxy_lab/common.sh for the detach handoff
+DETACH_PID=""
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+PLATFORM_NAME=ios
 
 configure_python_path
 parse_launcher_args "$@"
@@ -49,6 +54,7 @@ validate_common_files
 [ -z "$AVD" ] || fail 'arguments' '--avd is only valid for Android'
 [ "$BOOT_TIMEOUT" -eq 1 ] || fail 'arguments' '--boot-timeout is only valid for Android'
 [ -z "$SERIAL" ] || fail 'arguments' '--serial is only valid for Android'
+run_detach_handoff "$SCRIPT_DIR/start-proxy.sh" "$@"
 require_config_file
 if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
   for script in "${ADDON_SCRIPTS[@]}"; do
@@ -61,6 +67,9 @@ check_mitmproxy_version "$MITMPROXY_MIN_LOCAL_VERSION"
 
 cleanup() {
   trap - EXIT INT TERM HUP
+  if [ -n "${DURATION_PID:-}" ]; then
+    kill "$DURATION_PID" 2>/dev/null || true
+  fi
   if [ -n "$PROXY_PID" ]; then
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
@@ -111,6 +120,21 @@ else
 fi
 PROXY_PID=$!
 state_write proxy_pid "$PROXY_PID"
-info '✓' 'mitmdump' 'local:Simulator — Ctrl-C to stop'
+# Local capture has no port to poll, so give the extension a moment to attach
+# and confirm mitmdump is still alive before declaring the session ready.
+sleep 1
+if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+  wait "$PROXY_PID" 2>/dev/null || true
+  fail 'mitmdump' 'exited before local capture attached' \
+    'approve the mitmproxy network extension prompt when macOS asks' \
+    'see README.md → iOS step 3, and https://www.mitmproxy.org/posts/local-capture/macos/'
+fi
+mark_session_ready
+if [ -n "${DURATION:-}" ]; then
+  info '✓' 'mitmdump' "local:Simulator — stopping in ${DURATION}s"
+  start_duration_watchdog
+else
+  info '✓' 'mitmdump' 'local:Simulator — Ctrl-C to stop'
+fi
 printf '\n'
 wait "$PROXY_PID"

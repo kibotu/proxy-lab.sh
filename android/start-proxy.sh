@@ -34,8 +34,13 @@ CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 USER_CA_DIR="/data/misc/user/0/cacerts-added"
 EMULATOR_LOG=""
 PROXY_PID=""
+DURATION_PID=""
+# shellcheck disable=SC2034 # set by proxy_lab/common.sh for the detach handoff
+DETACH_PID=""
 STATE_ACQUIRED=0
 STATE_DIR=""
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+PLATFORM_NAME=android
 
 configure_python_path
 parse_launcher_args "$@"
@@ -43,6 +48,7 @@ validate_common_files
 DEVICE_PROXY="10.0.2.2:${PORT}"
 [ -z "$UDID" ] || fail 'arguments' '--udid is only valid for iOS'
 [ "$TRUST_ONLY" -eq 0 ] || fail 'arguments' '--trust-only is only valid for iOS'
+run_detach_handoff "$SCRIPT_DIR/start-proxy.sh" "$@"
 require_config_file
 if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
   for script in "${ADDON_SCRIPTS[@]}"; do
@@ -254,6 +260,9 @@ free_port() {
 cleanup() {
   trap - EXIT INT TERM HUP
   local restored=1 restore_status=0 serial
+  if [ -n "${DURATION_PID:-}" ]; then
+    kill "$DURATION_PID" 2>/dev/null || true
+  fi
   if [ -n "$PROXY_PID" ]; then
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
@@ -306,7 +315,13 @@ start_proxy() {
     wait "$PROXY_PID" 2>/dev/null || true
     fail 'mitmdump' "exited before listening on :$PORT" 'the output above says why'
   fi
-  info '✓' 'mitmdump' "0.0.0.0:$PORT — Ctrl-C to stop"
+  mark_session_ready
+  if [ -n "${DURATION:-}" ]; then
+    info '✓' 'mitmdump' "0.0.0.0:$PORT — stopping in ${DURATION}s"
+    start_duration_watchdog
+  else
+    info '✓' 'mitmdump' "0.0.0.0:$PORT — Ctrl-C to stop"
+  fi
   printf '\n'
   wait "$PROXY_PID"
 }

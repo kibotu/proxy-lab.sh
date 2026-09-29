@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `start --detach` runs the proxy in the background and returns once it is
+  listening, so a scripted caller gets a real readiness signal instead of a
+  foreground process it cannot stop. `--duration SECONDS` bounds a run on the
+  foreground path as well. The detached run writes its output to a log that
+  outlives the session, readable with the new `proxy-lab logs` command
+  (`--follow`, `--lines N`).
+- `--json` on `status`, `stop`, `doctor`, and `logs`. The document is the last
+  line of stdout; the lines before it stay human-readable.
+- `--log-format jsonl` emits one JSON object per request and per response, with
+  method, status code, headers, body sizes, and timing, for consumption by
+  `jq` or any line-oriented parser. Credential-bearing headers are redacted
+  alongside the existing query-parameter redaction.
+- Distinct exit codes so a script can branch on the reason a run failed:
+  2 arguments, 3 config/input, 4 missing tool, 5 device/CA, 6 port,
+  7 mitmproxy, 8 session state.
+- `proxy-lab init android` writes `network_security_config.xml` into the
+  project's debug resource tree and prints the manifest attribute to add. iOS
+  needs no file and says so.
+- `doctor` now reports whether a simulator is booted and that local capture
+  needs the network extension approved once through a GUI prompt that cannot be
+  scripted, instead of failing later with an unexplained hang.
+- Session state records the resolved mitmproxy version, its source, the log
+  path, and the log format, all reported by `status`.
+- `AGENTS.md` documents the operational contract for coding agents.
+
+### Fixed
+
+- `--detach` no longer leaves the launching process running alongside the
+  detached child; the parent exits once the child reports itself ready.
+
+### Changed
+
+- Documented `PROXY_LAB_MITMDUMP`, `MITMPROXY_SPEC`, and
+  `PROXY_LAB_SKIP_UPDATE_CHECK`, which were supported but undocumented.
+
 ## [2.0.2] - 2026-09-29
 
 ### Fixed
