@@ -9,8 +9,9 @@ description = "One command to see your app's HTTPS traffic: a mitmproxy setup fo
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
-# mitmproxy itself is selected by the launcher. ruamel.yaml is needed by the
-# packaged configuration loader and by the addon loaded by mitmproxy.
+# mitmproxy itself is selected by the launcher (host mitmdump, else pinned
+# mitmproxy==12.2.3 via uv). ruamel.yaml is needed by the packaged
+# configuration loader and by the addon loaded by mitmproxy.
 dependencies = ["ruamel.yaml>=0.18.6"]
 
 [project.scripts]

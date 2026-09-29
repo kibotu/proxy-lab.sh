@@ -21,6 +21,7 @@ else
   source "$SCRIPT_DIR/../proxy_lab/common.sh"
 fi
 
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 ROUTER="$PROJECT_DIR/local_router.py"
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
@@ -34,8 +35,13 @@ CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 USER_CA_DIR="/data/misc/user/0/cacerts-added"
 EMULATOR_LOG=""
 PROXY_PID=""
+DURATION_PID=""
+# shellcheck disable=SC2034 # set by proxy_lab/common.sh for the detach handoff
+DETACH_PID=""
 STATE_ACQUIRED=0
 STATE_DIR=""
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+PLATFORM_NAME=android
 
 configure_python_path
 parse_launcher_args "$@"
@@ -43,13 +49,9 @@ validate_common_files
 DEVICE_PROXY="10.0.2.2:${PORT}"
 [ -z "$UDID" ] || fail 'arguments' '--udid is only valid for iOS'
 [ "$TRUST_ONLY" -eq 0 ] || fail 'arguments' '--trust-only is only valid for iOS'
+run_detach_handoff "$SCRIPT_DIR/start-proxy.sh" "$@"
 require_config_file
-if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
-  for script in "${ADDON_SCRIPTS[@]}"; do
-    [ -f "$script" ] || fail 'addon' "missing: $script"
-  done
-fi
-
+use_android_sdk
 select_mitmproxy
 
 preflight_tools() {
@@ -61,17 +63,14 @@ preflight_tools() {
     for c in "${missing[@]}"; do
       # shellcheck disable=SC2016 # hint is copy-paste text — $PATH must stay literal
       case "$c" in
-        adb) hints+=('adb: install Android Studio, then export PATH="$PATH:$HOME/Library/Android/sdk/platform-tools" — https://developer.android.com/studio') ;;
+        adb) hints+=('adb: install Android Studio — https://developer.android.com/studio' \
+          'proxy-lab looks in $ANDROID_HOME, ~/Library/Android/sdk, and ~/Android/Sdk' \
+          'or: export PATH="$PATH:$HOME/Library/Android/sdk/platform-tools"' \
+          'then: proxy-lab doctor android') ;;
         *) hints+=("$c: not found — check your PATH") ;;
       esac
     done
     fail 'tools' "missing: ${missing[*]}" "${hints[@]}"
-  fi
-  [ -f "$ROUTER" ] || fail 'tools' 'local_router.py missing (complete checkout required)'
-  if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
-    for script in "${ADDON_SCRIPTS[@]}"; do
-      [ -f "$script" ] || fail 'tools' "addon missing: $script"
-    done
   fi
 
   # Warm the selected executable before boot; this also absorbs the first uv
@@ -252,8 +251,11 @@ free_port() {
 }
 
 cleanup() {
-  trap - EXIT INT TERM HUP
+  trap - EXIT INT TERM HUP USR1
   local restored=1 restore_status=0 serial
+  if [ -n "${DURATION_PID:-}" ]; then
+    kill "$DURATION_PID" 2>/dev/null || true
+  fi
   if [ -n "$PROXY_PID" ]; then
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
@@ -283,20 +285,10 @@ cleanup() {
 
 start_proxy() {
   local up=''
-  mitmproxy_addon_args
-  if [ "${#MITMPROXY_ADDON_ARGS[@]}" -gt 0 ]; then
-    "${MITMDUMP[@]}" --listen-host 0.0.0.0 --listen-port "$PORT" --set ssl_insecure=true \
-      -s "$ROUTER" "${MITMPROXY_ADDON_ARGS[@]}" &
-  else
-    "${MITMDUMP[@]}" --listen-host 0.0.0.0 --listen-port "$PORT" --set ssl_insecure=true \
-      -s "$ROUTER" &
-  fi
+  "${MITMDUMP[@]}" --listen-host 0.0.0.0 --listen-port "$PORT" --set ssl_insecure=true \
+    "${MITMDUMP_SCRIPT_ARGS[@]}" &
   PROXY_PID=$!
   state_write proxy_pid "$PROXY_PID"
-  trap cleanup EXIT
-  trap 'cleanup; exit 130' INT
-  trap 'cleanup; exit 143' TERM
-  trap 'cleanup; exit 129' HUP
   for _ in {1..20}; do
     lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && { up=1; break; }
     kill -0 "$PROXY_PID" 2>/dev/null || break
@@ -306,16 +298,19 @@ start_proxy() {
     wait "$PROXY_PID" 2>/dev/null || true
     fail 'mitmdump' "exited before listening on :$PORT" 'the output above says why'
   fi
-  info '✓' 'mitmdump' "0.0.0.0:$PORT — Ctrl-C to stop"
+  mark_session_ready
+  if [ -n "${DURATION:-}" ]; then
+    info '✓' 'mitmdump' "0.0.0.0:$PORT — stopping in ${DURATION}s"
+    start_duration_watchdog
+  else
+    info '✓' 'mitmdump' "0.0.0.0:$PORT — Ctrl-C to stop"
+  fi
   printf '\n'
   wait "$PROXY_PID"
 }
 
 preflight_tools
-trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
-trap 'cleanup; exit 129' HUP
+trap_cleanup
 state_acquire android "$PORT"
 ensure_host_ca
 boot_emulator

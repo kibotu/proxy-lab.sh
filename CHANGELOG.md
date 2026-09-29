@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `start --json` is agent mode: it detaches, defaults traffic to jsonl, and
+  prints one ready document (`ok`, `pid`, `log`, `stop`) once the proxy is up.
+  `--detach` and `--duration` remain available on their own.
+- `--json` on `status`, `stop`, `doctor`, and `logs`. Stdout is only that
+  document. `doctor --json` includes `next`, the command to run when the
+  environment is usable.
+- `--log-format jsonl` emits one JSON object per request and per response, with
+  method, status code, headers, body sizes, and timing, for consumption by
+  `jq` or any line-oriented parser. Credential-bearing headers are redacted
+  alongside the existing query-parameter redaction.
+- Distinct exit codes so a script can branch on the reason a run failed:
+  2 arguments, 3 config/input, 4 missing tool, 5 device/CA, 6 port,
+  7 mitmproxy, 8 session state.
+- `proxy-lab init android` writes `network_security_config.xml` into the
+  project's debug resource tree, walks up from the current directory to find
+  that tree, and prints whether the manifest attribute is already present.
+  iOS needs no file and says so.
+- `doctor` reports whether a simulator is booted, warns on Play Store AVDs,
+  locates `adb` in the Android SDK without a PATH edit, and names the next
+  command. Local capture still needs the network extension approved once
+  through a GUI prompt that cannot be scripted.
+- Session state records the resolved mitmproxy version, its source, the log
+  path, and the log format, all reported by `status`.
+- `AGENTS.md` documents the operational contract for coding agents.
+
+### Fixed
+
+- `--detach` no longer leaves the launching process running alongside the
+  detached child; the parent exits once the child reports itself ready.
+- `proxy-lab start --detach` honours `DETACH=1` from the environment. The
+  Python CLI talks in env vars; wiping them during bash argument parsing made
+  detached start a no-op.
+
+### Changed
+
+- The uv fallback pins `mitmproxy==12.2.3`. A host `mitmdump` still wins.
+  Override with `MITMPROXY_SPEC`. `doctor` (not `start`) mentions a newer
+  PyPI release, so everyday runs do not phone home.
+- Documented `PROXY_LAB_MITMDUMP`, `MITMPROXY_SPEC`, and
+  `PROXY_LAB_SKIP_UPDATE_CHECK`.
+
 ## [2.0.2] - 2026-09-29
 
 ### Fixed

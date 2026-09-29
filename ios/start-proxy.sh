@@ -18,21 +18,17 @@ else
   source "$SCRIPT_DIR/../proxy_lab/common.sh"
 fi
 
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 ROUTER="$PROJECT_DIR/local_router.py"
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
-# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+# Local capture has no listen port. State uses 0 as the slot name.
 PORT=0
-# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
-VALIDATE_PORT=0
-# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
-BOOT_TIMEOUT=1
-# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
-AVD=""
-# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
-SERIAL=""
 UDID="${UDID:-}"
 TRUST_ONLY=0
+AVD="${AVD:-}"
+SERIAL="${SERIAL:-}"
+BOOT_TIMEOUT="${BOOT_TIMEOUT:-}"
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 MITMPROXY_MIN_LOCAL_VERSION="10.1.5"
@@ -41,26 +37,29 @@ PROXY_PID=""
 STATE_ACQUIRED=0
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 STATE_DIR=""
+DURATION_PID=""
+# shellcheck disable=SC2034 # set by proxy_lab/common.sh for the detach handoff
+DETACH_PID=""
+# shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+PLATFORM_NAME=ios
 
 configure_python_path
 parse_launcher_args "$@"
 validate_common_files
 [ "$PORT" -eq 0 ] || fail 'arguments' '--port is only valid for Android'
 [ -z "$AVD" ] || fail 'arguments' '--avd is only valid for Android'
-[ "$BOOT_TIMEOUT" -eq 1 ] || fail 'arguments' '--boot-timeout is only valid for Android'
+[ -z "$BOOT_TIMEOUT" ] || fail 'arguments' '--boot-timeout is only valid for Android'
 [ -z "$SERIAL" ] || fail 'arguments' '--serial is only valid for Android'
+run_detach_handoff "$SCRIPT_DIR/start-proxy.sh" "$@"
 require_config_file
-if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
-  for script in "${ADDON_SCRIPTS[@]}"; do
-    [ -f "$script" ] || fail 'addon' "missing: $script"
-  done
-fi
-
 select_mitmproxy
 check_mitmproxy_version "$MITMPROXY_MIN_LOCAL_VERSION"
 
 cleanup() {
-  trap - EXIT INT TERM HUP
+  trap - EXIT INT TERM HUP USR1
+  if [ -n "${DURATION_PID:-}" ]; then
+    kill "$DURATION_PID" 2>/dev/null || true
+  fi
   if [ -n "$PROXY_PID" ]; then
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
@@ -82,10 +81,7 @@ if [ "$TRUST_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
-trap 'cleanup; exit 129' HUP
+trap_cleanup
 state_acquire ios 0
 ensure_host_ca
 
@@ -95,22 +91,34 @@ if [ "$trust_status" -ne 0 ]; then
   info '!' 'simulator' 'automatic CA trust unavailable; use mitm.it in the booted Simulator'
 fi
 
-mitmproxy_addon_args
-if [ "${#MITMPROXY_ADDON_ARGS[@]}" -gt 0 ]; then
-  "${MITMDUMP[@]}" \
-    --mode local:Simulator \
-    --showhost \
-    --set ssl_insecure=true \
-    -s "$ROUTER" "${MITMPROXY_ADDON_ARGS[@]}" &
-else
-  "${MITMDUMP[@]}" \
-    --mode local:Simulator \
-    --showhost \
-    --set ssl_insecure=true \
-    -s "$ROUTER" &
-fi
+"${MITMDUMP[@]}" \
+  --mode local:Simulator \
+  --showhost \
+  --set ssl_insecure=true \
+  "${MITMDUMP_SCRIPT_ARGS[@]}" &
 PROXY_PID=$!
 state_write proxy_pid "$PROXY_PID"
-info '✓' 'mitmdump' 'local:Simulator — Ctrl-C to stop'
+# Local capture has no port to poll. Give mitmdump a moment: a non-zero exit
+# is a failed start, a clean exit is a finished run, and a live process is up.
+for _ in 1 2 3 4 5 6 7 8; do
+  kill -0 "$PROXY_PID" 2>/dev/null || break
+  sleep 0.25
+done
+if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+  proxy_status=0
+  wait "$PROXY_PID" || proxy_status=$?
+  PROXY_PID=""
+  [ "$proxy_status" -eq 0 ] && exit 0
+  fail 'mitmdump' "exited during startup (status $proxy_status)" \
+    'the output above says why' \
+    'first run? approve the mitmproxy network extension when macOS asks'
+fi
+mark_session_ready
+if [ -n "${DURATION:-}" ]; then
+  info '✓' 'mitmdump' "local:Simulator — stopping in ${DURATION}s"
+  start_duration_watchdog
+else
+  info '✓' 'mitmdump' 'local:Simulator — Ctrl-C to stop'
+fi
 printf '\n'
 wait "$PROXY_PID"

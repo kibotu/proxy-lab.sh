@@ -40,6 +40,19 @@ _SENSITIVE_QUERY_KEYS = frozenset(
     }
 )
 
+_SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "set-cookie",
+        "www-authenticate",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+    }
+)
+
 
 def _ascii_host(value: str) -> str:
     value = value.strip().rstrip(".").casefold()
@@ -138,3 +151,23 @@ def redact_url(url: str) -> str:
         for key, value in pairs
     ]
     return urlunsplit(parts._replace(query=urlencode(redacted)))
+
+
+def _is_sensitive_header(name: str) -> bool:
+    key = name.casefold()
+    return key in _SENSITIVE_HEADERS or any(
+        part in key for part in ("authorization", "api-key", "apikey", "secret", "session")
+    )
+
+
+def redact_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Redact credential-bearing header values, preserving header names.
+
+    Header names are safe to log and carry most of the debugging value; the
+    values are where bearer tokens and cookies live.
+    """
+
+    return {
+        name: "<r>" if _is_sensitive_header(name) else value
+        for name, value in headers.items()
+    }
