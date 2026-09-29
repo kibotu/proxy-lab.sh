@@ -7,6 +7,10 @@ if [ -n "${PROXY_LAB_COMMON_LOADED:-}" ]; then
 fi
 PROXY_LAB_COMMON_LOADED=1
 
+# Pinned so today's one-liner is tomorrow's one-liner. A host `mitmdump`
+# still wins. Override with MITMPROXY_SPEC=mitmproxy==X.Y.Z when you need to.
+: "${MITMPROXY_SPEC:=mitmproxy==12.2.3}"
+
 # Exit codes are part of the contract: a script can branch on the reason a run
 # failed without parsing English. Keep this table in sync with README.md.
 #   0 ok  1 unspecified  2 arguments  3 config/input  4 missing tool
@@ -69,15 +73,13 @@ resolve_file() {
 parse_launcher_args() {
   local index resolved
   ADDON_SCRIPTS=()
+  # The Python CLI talks in environment variables; clone users pass flags.
+  # Flags win. Never reset these to empty — that drops `proxy-lab start --detach`.
   DETACH="${DETACH:-0}"
   DURATION="${DURATION:-}"
+  LOG_FORMAT="${PROXY_LAB_LOG_FORMAT:-${LOG_FORMAT:-text}}"
   JSON_OUTPUT="${JSON_OUTPUT:-0}"
-  LOG_FORMAT="${LOG_FORMAT:-text}"
-  export PROXY_LAB_LOG_FORMAT="$LOG_FORMAT"
-
-  if [ -n "${PROXY_LAB_DURATION:-}" ]; then
-    DURATION="$PROXY_LAB_DURATION"
-  fi
+  log_format_set=0
 
   if [ -n "${PROXY_LAB_SCRIPTS:-}" ]; then
     while IFS= read -r script; do
@@ -130,7 +132,6 @@ parse_launcher_args() {
         shift
         ;;
       --detach)
-        # shellcheck disable=SC2034 # consumed by the launchers
         DETACH=1
         shift
         ;;
@@ -141,6 +142,7 @@ parse_launcher_args() {
       --log-format)
         require_value "$1" "${2-}"
         LOG_FORMAT="$2"
+        log_format_set=1
         shift 2
         ;;
       --duration)
@@ -158,30 +160,66 @@ parse_launcher_args() {
     esac
   done
 
+  # --json is agent mode: bounded, detachable, machine-readable.
+  if [ "$JSON_OUTPUT" = "1" ]; then
+    DETACH=1
+    [ "$log_format_set" -eq 0 ] && [ -z "${PROXY_LAB_LOG_FORMAT:-}" ] && LOG_FORMAT=jsonl
+  fi
+
+  # The mitmproxy addon reads its output format from the environment.
+  export PROXY_LAB_LOG_FORMAT="$LOG_FORMAT"
+  export JSON_OUTPUT
   ROUTER="$(resolve_file "$ROUTER" 'router')"
   CONFIG="$(resolve_file "$CONFIG" 'config')"
-  if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
-    index=0
-    for script in "${ADDON_SCRIPTS[@]}"; do
-      resolved="$(resolve_file "$script" 'addon')"
-      ADDON_SCRIPTS[index]="$resolved"
-      index=$((index + 1))
-    done
-  fi
+  MITMDUMP_SCRIPT_ARGS=(-s "$ROUTER")
+  index=0
+  for script in ${ADDON_SCRIPTS[@]+"${ADDON_SCRIPTS[@]}"}; do
+    resolved="$(resolve_file "$script" 'addon')"
+    ADDON_SCRIPTS[index]="$resolved"
+    MITMDUMP_SCRIPT_ARGS+=(-s "$resolved")
+    index=$((index + 1))
+  done
+}
+
+# Android Studio installs the SDK without touching PATH. Find adb and emulator
+# where it puts them, so a fresh machine works without shell-profile edits.
+use_android_sdk() {
+  # Android Studio does not put adb on PATH. Look where it actually installs.
+  local sdk
+  for sdk in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" \
+    "$HOME/Library/Android/sdk" "$HOME/Android/Sdk"; do
+    [ -n "$sdk" ] || continue
+    if ! command -v adb >/dev/null 2>&1 && [ -x "$sdk/platform-tools/adb" ]; then
+      PATH="$PATH:$sdk/platform-tools"
+    fi
+    if ! command -v emulator >/dev/null 2>&1 && [ -x "$sdk/emulator/emulator" ]; then
+      PATH="$PATH:$sdk/emulator"
+    fi
+  done
+  export PATH
+}
+
+# Every launcher cleans up the same way on every exit path.
+trap_cleanup() {
+  trap cleanup EXIT
+  trap 'cleanup; exit 130' INT
+  trap 'cleanup; exit 143' TERM
+  trap 'cleanup; exit 129' HUP
+  # --duration elapsed: the run ended as planned.
+  trap 'cleanup; exit 0' USR1
 }
 
 validate_common_files() {
-  if [ "${VALIDATE_PORT:-1}" -eq 1 ]; then
+  if [ "${PLATFORM_NAME:-}" = android ]; then
     case "${PORT:-}" in
       ''|*[!0-9]*) fail 'arguments' "PORT must be a positive integer: ${PORT:-}" ;;
     esac
     [ "$PORT" -gt 0 ] 2>/dev/null || fail 'arguments' "PORT must be greater than zero: $PORT"
+    case "${BOOT_TIMEOUT:-}" in
+      ''|*[!0-9]*) fail 'arguments' "BOOT_TIMEOUT must be a positive integer: ${BOOT_TIMEOUT:-}" ;;
+    esac
+    [ "$BOOT_TIMEOUT" -gt 0 ] 2>/dev/null || fail 'arguments' "BOOT_TIMEOUT must be greater than zero: $BOOT_TIMEOUT"
   fi
-
-  case "${BOOT_TIMEOUT:-}" in
-    ''|*[!0-9]*) fail 'arguments' "BOOT_TIMEOUT must be a positive integer: ${BOOT_TIMEOUT:-}" ;;
-  esac
-  [ "$BOOT_TIMEOUT" -gt 0 ] 2>/dev/null || fail 'arguments' "BOOT_TIMEOUT must be greater than zero: $BOOT_TIMEOUT"
 
   if [ -n "${DURATION:-}" ]; then
     case "$DURATION" in
@@ -205,8 +243,8 @@ try_select_mitmproxy() {
     MITMDUMP=(mitmdump)
     MITMPROXY_SOURCE="host mitmdump"
   elif command -v uv >/dev/null 2>&1; then
-    MITMDUMP=(uv tool run --from "${MITMPROXY_SPEC:-mitmproxy@latest}" mitmdump)
-    MITMPROXY_SOURCE="uv ${MITMPROXY_SPEC:-mitmproxy@latest}"
+    MITMDUMP=(uv tool run --from "$MITMPROXY_SPEC" mitmdump)
+    MITMPROXY_SOURCE="uv $MITMPROXY_SPEC"
   else
     return 1
   fi
@@ -214,7 +252,9 @@ try_select_mitmproxy() {
 
 select_mitmproxy() {
   try_select_mitmproxy || fail 'mitmproxy' 'mitmdump not found and uv is not installed' \
-    'brew install --cask mitmproxy or brew install uv'
+    'brew install uv   # then this tool fetches the pinned mitmproxy' \
+    'or: brew install --cask mitmproxy' \
+    'run: proxy-lab doctor'
 }
 
 mitmproxy_version() {
@@ -237,7 +277,7 @@ version_is_older() {
 }
 
 check_mitmproxy_version() {
-  local minimum="${1:-}" current latest
+  local minimum="${1:-}" current
   current="$(mitmproxy_version || true)"
   [ -n "$current" ] ||
     fail 'mitmproxy' "could not run ${MITMDUMP[*]} --version" \
@@ -250,10 +290,6 @@ check_mitmproxy_version() {
   fi
 
   info '✓' 'mitmproxy' "$current via $MITMPROXY_SOURCE"
-  latest="$(latest_mitmproxy_version || true)"
-  if [ -n "$latest" ] && version_is_older "$current" "$latest"; then
-    info 'i' 'mitmproxy' "newer version available: $latest — https://pypi.org/project/mitmproxy/"
-  fi
 }
 
 ensure_host_ca() {
@@ -318,17 +354,16 @@ except ConfigError as exc:
 PY
 }
 
+# Only status 1 means the file is invalid; anything else means Python could
+# not run the check, which mitmproxy will then do on load.
 require_config_file() {
   local status=0
   validate_config_file || status=$?
-  if [ "$status" -ne 0 ]; then
-    case "$status" in
-      2) info '!' 'config' "deferred validation to mitmproxy: $CONFIG" ;;
-      *) fail 'config' "invalid config: $CONFIG" "fix the domains list; see README.md" ;;
-    esac
-  else
-    info '✓' 'config' "$CONFIG"
-  fi
+  case "$status" in
+    0) info '✓' 'config' "$CONFIG" ;;
+    1) fail 'config' "invalid config: $CONFIG" "fix the domains list; see README.md" ;;
+    *) info '!' 'config' "deferred validation to mitmproxy: $CONFIG" ;;
+  esac
 }
 
 state_root() {
@@ -413,6 +448,13 @@ log_path_for() {
   printf '%s/logs/%s-%s.log' "$(state_root)" "$platform" "$port"
 }
 
+state_refuse_live() {
+  local directory="$1" platform="$2"
+  state_owner_matches "$directory" || return 0
+  fail 'session' "another proxy-lab session is active for $platform" \
+    "run: proxy-lab status $platform" "or stop it: proxy-lab stop $platform"
+}
+
 state_acquire() {
   local platform="$1" port="${2:-0}" owner
   umask 077
@@ -426,10 +468,7 @@ state_acquire() {
 
   if ! mkdir "$STATE_DIR" 2>/dev/null; then
     owner="$(state_read_from "$STATE_DIR" owner)"
-    if state_pid_alive "$owner" && state_owner_matches "$STATE_DIR"; then
-      fail 'session' "another proxy-lab session is active for $platform" \
-        "run: proxy-lab status $platform"
-    fi
+    state_refuse_live "$STATE_DIR" "$platform"
     if state_pid_alive "$owner"; then
       info '!' 'session' "PID $owner is not the recorded owner; reclaiming its state"
     else
@@ -470,13 +509,15 @@ state_release() {
 
 # Stop the proxy after a fixed number of seconds so a bounded run always exits.
 # Uses a watchdog subshell rather than a sleep in the foreground so the proxy
-# output keeps flowing while the timer runs.
+# output keeps flowing while the timer runs. USR1 tells the launcher the run
+# ended as planned; the redirect keeps the timer from holding a caller's pipe
+# open after an early stop.
 start_duration_watchdog() {
   [ -n "${DURATION:-}" ] || return 0
   (
     sleep "$DURATION"
-    kill -TERM "$$" 2>/dev/null || true
-  ) &
+    kill -USR1 "$$" 2>/dev/null || true
+  ) >/dev/null 2>&1 </dev/null &
   # shellcheck disable=SC2034 # consumed by the launcher cleanup trap
   DURATION_PID=$!
 }
@@ -517,14 +558,31 @@ run_detach_handoff() {
   fi
   log="$(log_path_for "$PLATFORM_NAME" "$port")"
   timeout="${DETACH_READY_TIMEOUT:-600}"
+  # Refuse before spawning: the child would fail anyway, and truncating the
+  # log here would erase the live session's traffic.
+  state_refuse_live "$dir" "$PLATFORM_NAME"
 
   run_detached "$script" "$log" "$@"
-  info '…' 'detached' "starting in the background (pid $DETACH_PID)"
+  if [ "${JSON_OUTPUT:-0}" != "1" ]; then
+    info '…' 'detached' "starting in the background (pid $DETACH_PID)"
+  fi
 
   deadline=$((SECONDS + timeout))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if [ -f "$dir/ready" ]; then
-      info '✓' 'detached' "pid $DETACH_PID — log $log"
+    if [ -f "$dir/ready" ] && [ "$(state_read_from "$dir" owner)" = "$DETACH_PID" ]; then
+      if [ "${JSON_OUTPUT:-0}" = "1" ]; then
+        printf '{'
+        printf '"ok": true, '
+        json_field 'platform' "$PLATFORM_NAME"; printf ', '
+        printf '"pid": %s, ' "$DETACH_PID"
+        printf '"port": %s, ' "$port"
+        json_field 'log' "$log"; printf ', '
+        json_field 'log_format' "${LOG_FORMAT:-text}"; printf ', '
+        json_field 'stop' "proxy-lab stop $PLATFORM_NAME"
+        printf '}\n'
+      else
+        info '✓' 'detached' "pid $DETACH_PID — log $log"
+      fi
       exit 0
     fi
     if ! kill -0 "$DETACH_PID" 2>/dev/null; then
@@ -588,13 +646,4 @@ trust_ios_certificate() {
   [ -n "$udid" ] || return 3
   xcrun simctl keychain "$udid" add-root-cert "$CERT" >/dev/null 2>&1 || return 1
   info '✓' 'simulator' "CA trusted in $udid"
-}
-
-mitmproxy_addon_args() {
-  MITMPROXY_ADDON_ARGS=()
-  if [ "${#ADDON_SCRIPTS[@]}" -gt 0 ]; then
-    for script in "${ADDON_SCRIPTS[@]}"; do
-      MITMPROXY_ADDON_ARGS+=( -s "$script" )
-    done
-  fi
 }

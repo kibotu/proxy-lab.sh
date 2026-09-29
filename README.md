@@ -20,7 +20,8 @@ uvx proxy-lab start android
 
 These commands install the published release. From a checkout, use
 `uvx --from . proxy-lab start ios` (or `android`) to run the current source.
-Pinning the wrapper does not pin mitmproxy.
+mitmproxy is pinned inside the wrapper (`mitmproxy==12.2.3`). Override with
+`MITMPROXY_SPEC` or a host `mitmdump`.
 
 ![proxy-lab.sh terminal output showing intercepted HTTPS requests](docs/teaser.png)
 
@@ -51,7 +52,7 @@ codes, and the JSON shapes.
 
 ## Quickstart
 
-Install [uv](https://docs.astral.sh/uv/) to run the commands below. The scripts prefer a host-installed `mitmdump`; without one, they use uv to resolve `mitmproxy@latest`.
+Install [uv](https://docs.astral.sh/uv/) to run the commands below. The scripts prefer a host-installed `mitmdump`; without one, they use uv to run a pinned mitmproxy.
 
 ```bash
 brew install uv
@@ -60,7 +61,7 @@ brew install uv
 brew install --cask mitmproxy
 ```
 
-Then follow the path for your platform. If no host `mitmdump` is installed, the first run resolves the latest compatible mitmproxy release, downloading it when needed. Later runs are usually quick.
+Then follow the path for your platform. The first run may download mitmproxy. Later runs start in seconds. `adb` and `emulator` are found in the Android SDK even if they are not on your `PATH`.
 
 ### Android
 
@@ -139,45 +140,30 @@ No root or reboot is required. HTTPS interception still requires the simulator t
 
 ## Automation
 
-`start` runs in the foreground until Ctrl-C, which is right for a human at a terminal and wrong for a script or an agent. Three options make a run bounded and non-interactive.
-
-**`--detach`** runs the proxy in the background and returns once it is **up**, so a zero exit status means the proxy is listening:
+`start` runs in the foreground until Ctrl-C. That is right for a human and
+wrong for a script. **`--json` is agent mode**: it detaches, writes jsonl
+traffic, and prints one ready document once the proxy is up.
 
 ```bash
-uvx proxy-lab start android --detach
-uvx proxy-lab logs android --follow     # tail the traffic
+uvx proxy-lab start android --json
+uvx proxy-lab logs android
 uvx proxy-lab stop android
 ```
 
-**`--duration SECONDS`** stops the run automatically, on the foreground path as well:
+`--detach` and `--log-format jsonl` are still available separately. `--duration
+SECONDS` stops a run automatically, including on the foreground path.
+
+See [AGENTS.md](AGENTS.md) for the ready-document shape, exit codes, and the
+copy-pasteable workflow.
+
+`status`, `stop`, `doctor`, and `logs` also accept `--json`. Stdout is only that
+document. `doctor --json` includes `.next`, the command to run when the
+environment is usable.
 
 ```bash
-uvx proxy-lab start ios --duration 60
+uvx proxy-lab doctor android --json | jq -r '.next'
+uvx proxy-lab init android
 ```
-
-**`--log-format jsonl`** replaces the `[local_router]` lines with one JSON object per line, carrying method, status code, headers, and timing:
-
-```bash
-uvx proxy-lab start android --detach --log-format jsonl
-uvx proxy-lab logs android | jq -r 'select(.status_code) | "\(.status_code) \(.method) \(.url)"'
-```
-
-The request event has `status_code: null`; the response event carries the result. Credential-bearing query parameters and headers (`Authorization`, `Cookie`, `X-Api-Key`, and similar) are redacted to `<r>`. mitmproxy's own console flow display still prints unredacted URLs — that is `mitmdump`, not this tool — so prefer `jsonl` over grepping raw output when secrets are in play.
-
-`status`, `stop`, `doctor`, and `logs` accept `--json` for machine-readable output. The JSON document is the last line of stdout; the lines before it are human context.
-
-```bash
-uvx proxy-lab status --json | jq '.[].state'
-uvx proxy-lab doctor --json | jq -r '.checks[] | select(.status=="fail")'
-```
-
-The Android debug-build step has a command too, so nobody has to hand-write the XML:
-
-```bash
-uvx proxy-lab init android    # writes app/src/debug/res/xml/network_security_config.xml
-```
-
-See [AGENTS.md](AGENTS.md) for the exit-code table and a copy-pasteable workflow.
 
 ## Choose the domains to log
 
@@ -244,8 +230,8 @@ Further environment variables:
 | --- | --- |
 | `PROXY_LAB_CONFIG` | Domain list, equivalent to the positional `domains.yml`. |
 | `PROXY_LAB_MITMDUMP` | Use a specific `mitmdump` binary instead of discovery. |
-| `MITMPROXY_SPEC` | mitmproxy spec for the uv fallback. Defaults to `mitmproxy@latest`. |
-| `PROXY_LAB_SKIP_UPDATE_CHECK` | `1` skips the PyPI version check. |
+| `MITMPROXY_SPEC` | mitmproxy spec for the uv fallback. Defaults to `mitmproxy==12.2.3`. |
+| `PROXY_LAB_SKIP_UPDATE_CHECK` | `1` skips the PyPI version check that `doctor` runs. |
 
 Environment variables remain supported for automation:
 
@@ -273,7 +259,7 @@ uvx proxy-lab reset android
 uvx proxy-lab doctor
 ```
 
-`stop` signals only the recorded owner and restores the previous Android proxy value. `reset` is the explicit recovery command for stale state or proxy settings. `doctor` reports the same pre-flight inputs used by `start`—versions, tools, SDK paths, devices, CA, config, and state—without starting a proxy.
+`stop` signals only the recorded owner and restores the previous Android proxy value. `reset` is the explicit recovery command for stale state or proxy settings. `doctor` reports the same pre-flight inputs used by `start`—versions, tools, SDK paths, devices, CA, config, and state—without starting a proxy. It ends with the next command to run. `adb` is located from `$ANDROID_HOME`, `~/Library/Android/sdk`, and `~/Android/Sdk` when it is not on `PATH`.
 
 Use `uvx proxy-lab --version` to print the wrapper version.
 
@@ -314,18 +300,18 @@ shellcheck android/start-proxy.sh ios/start-proxy.sh proxy_lab/common.sh proxy_l
 
 ## Requirements
 
-- **macOS.** The iOS Simulator needs Xcode.
+- **macOS only.** The iOS Simulator needs Xcode. Android Studio's SDK is discovered automatically (`~/Library/Android/sdk`).
 - **Python:** Python 3.9+ is used by the packaged CLI/configuration loader. `uvx` supplies it automatically.
-- **mitmproxy:** Optional host `mitmdump`; otherwise the launchers request `mitmproxy@latest` through uv. See [Quickstart](#quickstart) for install commands.
-- **[curl](https://curl.se/)** — optional; when available, preflight uses it to check whether a newer mitmproxy release is available. A failed or unavailable check is ignored.
-- **Android:** `adb` and `emulator` on your `$PATH` (Android Studio's SDK provides both), plus a Google APIs AVD. Your debug build must trust user CAs, as shown in [the Android quickstart](#android).
-- **iOS:** Xcode and a local-mode-capable mitmproxy (`10.1.5+`; see [macOS local capture](https://www.mitmproxy.org/posts/local-capture/macos/)). The fallback requests `mitmproxy@latest`.
+- **mitmproxy:** Optional host `mitmdump`; otherwise the launchers request pinned `mitmproxy==12.2.3` through uv. Override with `MITMPROXY_SPEC`. See [Quickstart](#quickstart) for install commands.
+- **[curl](https://curl.se/)** — optional; `doctor` uses it to mention a newer mitmproxy release. A failed check is ignored.
+- **Android:** `adb` and `emulator` (Android Studio's SDK provides both — they do not need to be on `PATH`), plus a Google APIs AVD. Your debug build must trust user CAs, as shown in [the Android quickstart](#android).
+- **iOS:** Xcode and a local-mode-capable mitmproxy (`10.1.5+`; see [macOS local capture](https://www.mitmproxy.org/posts/local-capture/macos/)).
 
-The Android script also uses `openssl` and `lsof`, which macOS ships. Preflight reports missing tools with a PATH hint.
+The Android script also uses `openssl` and `lsof`, which macOS ships. Missing tools print the command that fixes them. When a start fails, run `proxy-lab doctor` first.
 
 ## Troubleshooting
 
-The scripts fail loudly, and the error line usually contains the answer. These are the recurring ones:
+Start with `uvx proxy-lab doctor android` (or `ios`). It prints the next command. The scripts fail loudly; these are the recurring ones:
 
 - **`adbd cannot run as root in production builds`** — the AVD uses a Play Store image. Check with `grep image.sysdir ~/.android/avd/<AVD>.avd/config.ini` and create a Google APIs AVD instead.
 - **Nothing shows up after `--detach`** — the traffic is on disk, not in your terminal: `uvx proxy-lab logs android`.
@@ -368,7 +354,7 @@ What you get for the Android run:
 
 | Step | Behaviour |
 | --- | --- |
-| Tools | Checks `adb`, `openssl`, `lsof` and the addon, then selects a host `mitmdump` or warms uv's `mitmproxy@latest` fallback. It logs the resolved version and, when available, a newer PyPI release. |
+| Tools | Checks `adb`, `openssl`, `lsof` and the addon, then selects a host `mitmdump` or warms the pinned uv mitmproxy. `adb` is found in the Android SDK if it is not on `PATH`. |
 | Host CA | Generates `~/.mitmproxy/` on the first run. |
 | Emulator | Reuses a running emulator, or boots one and waits for it. |
 | Device CA | Installs the certificate if missing. The first install reboots once per AVD. If `chmod`/`restorecon` fails, the partial file is removed; later verification failures are reported. |
@@ -390,7 +376,7 @@ For a GUI or broader device support, use [HTTP Toolkit](https://httptoolkit.com/
 
 ## Versions and releases
 
-- **mitmproxy** uses the host `mitmdump` when available. Otherwise the scripts request the intentionally unpinned `mitmproxy@latest` through uv. Preflight logs the resolved version and, when `curl` is available, queries PyPI for a newer release.
+- **mitmproxy** uses the host `mitmdump` when available. Otherwise the scripts request pinned `mitmproxy==12.2.3` through uv. `doctor` logs the resolved version and, when `curl` is available, mentions a newer PyPI release. Override with `MITMPROXY_SPEC`.
 - **proxy-lab.sh** keeps the package version in `pyproject.toml`; `proxy-lab --version` reads installed package metadata. The release workflow refuses to publish a tag that disagrees with that version.
 - Tags are `X.Y.Z`, with no `v` prefix. A matching tag builds the wheel and sdist and publishes both a [GitHub Release](https://github.com/kibotu/proxy-lab.sh/releases) and the same artifacts to [PyPI](https://pypi.org/project/proxy-lab/). [CHANGELOG.md](CHANGELOG.md) has the per-version detail.
 

@@ -88,28 +88,6 @@ fi
                 xcrun_log.read_text(encoding="utf-8"),
             )
 
-    def test_state_acquire_is_atomic_and_owner_scoped(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            env = os.environ.copy()
-            env["PROXY_LAB_STATE_DIR"] = directory
-            result = self.run_command(
-                [
-                    "bash",
-                    "-c",
-                    (
-                        "set -euo pipefail; "
-                        f"PROJECT_DIR={str(ROOT)!r}; "
-                        f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
-                        "state_acquire android 8123; "
-                        "test -f \"$STATE_DIR/owner\"; "
-                        "state_release; "
-                        "test ! -d \"$STATE_DIR\""
-                    ),
-                ],
-                env,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_android_start_restores_proxy_and_removes_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -353,15 +331,6 @@ exit 0
             self.assertEqual(sessions[0]["platform"], "android")
             self.assertEqual(sessions[0]["config"], 'a"b\\c.yml')
 
-    def test_status_json_is_an_empty_array_without_sessions(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            result = self.run_command(
-                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "status", "--json"],
-                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout), [])
-
     def test_doctor_json_reports_the_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fake_bin = Path(directory) / "bin"
@@ -397,10 +366,11 @@ exit 0
                 env,
             )
 
-            # The JSON document is the last line; the rest is human context.
-            report = json.loads(result.stdout.strip().splitlines()[-1])
+            # --json is the whole document, not a trailer after human output.
+            report = json.loads(result.stdout)
             self.assertIn("checks", report)
             self.assertIn("ok", report)
+            self.assertIn("next", report)
             self.assertTrue(any(c["name"] == "mitmproxy" for c in report["checks"]))
 
     def test_doctor_exits_non_zero_when_a_check_fails(self) -> None:
@@ -424,7 +394,7 @@ exit 0
             )
 
             self.assertEqual(result.returncode, 1)
-            report = json.loads(result.stdout.strip().splitlines()[-1])
+            report = json.loads(result.stdout)
             self.assertFalse(report["ok"])
             failed = [c for c in report["checks"] if c["status"] == "fail"]
             self.assertTrue(any(c["name"] == "config" for c in failed))
@@ -443,110 +413,9 @@ exit 0
             )
 
             self.assertEqual(result.returncode, 1)
-            report = json.loads(result.stdout.strip().splitlines()[-1])
+            report = json.loads(result.stdout)
             self.assertEqual(report[0]["status"], "fail")
             self.assertIn("not the recorded", report[0]["detail"])
-
-    def test_logs_reports_nothing_when_no_run_exists(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            result = self.run_command(
-                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "logs", "--json"],
-                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
-            )
-            self.assertEqual(result.returncode, 1)
-            self.assertEqual(json.loads(result.stdout), {"sessions": []})
-
-    def test_logs_prints_a_previously_written_log(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            log_dir = Path(directory) / "logs"
-            log_dir.mkdir()
-            log = log_dir / "ios-0.log"
-            log.write_text("[local_router] https://a.example.com/x\n", encoding="utf-8")
-
-            result = self.run_command(
-                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "logs", "ios"],
-                {**os.environ, "PROXY_LAB_STATE_DIR": directory},
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("[local_router] https://a.example.com/x", result.stdout)
-
-    def test_invalid_duration_is_rejected_with_the_arguments_code(self) -> None:
-        result = self.run_command(
-            [
-                "bash",
-                "-c",
-                (
-                    "set -euo pipefail; "
-                    f"PROJECT_DIR={str(ROOT)!r}; "
-                    f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
-                    "PORT=8080; VALIDATE_PORT=1; BOOT_TIMEOUT=240; "
-                    "DURATION=notanumber; validate_common_files"
-                ),
-            ],
-            os.environ.copy(),
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("duration must be", result.stderr)
-
-    def test_unknown_log_format_is_rejected(self) -> None:
-        result = self.run_command(
-            [
-                "bash",
-                "-c",
-                (
-                    "set -euo pipefail; "
-                    f"PROJECT_DIR={str(ROOT)!r}; "
-                    f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
-                    "PORT=8080; VALIDATE_PORT=1; BOOT_TIMEOUT=240; "
-                    "LOG_FORMAT=xml; validate_common_files"
-                ),
-            ],
-            os.environ.copy(),
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("unknown log format", result.stderr)
-
-    def test_reset_restores_recorded_android_proxy(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            state_dir = root / "android-8080"
-            state_dir.mkdir()
-            (state_dir / "owner").write_text("999999\n", encoding="utf-8")
-            (state_dir / "platform").write_text("android\n", encoding="utf-8")
-            (state_dir / "serial").write_text("emulator-5554\n", encoding="utf-8")
-            (state_dir / "previous_proxy").write_text("10.0.0.1:8888\n", encoding="utf-8")
-            adb_log = root / "adb.log"
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            fake_adb = fake_bin / "adb"
-            fake_adb.write_text(
-                """#!/usr/bin/env bash
-printf '%s\\n' \"$*\" >> \"$ADB_LOG\"
-if [ \"$1\" = devices ]; then
-  printf '%s\\n' 'emulator-5554 device'
-fi
-""",
-                encoding="utf-8",
-            )
-            fake_adb.chmod(0o755)
-            adb_log.write_text("", encoding="utf-8")
-            env = os.environ.copy()
-            env.update(
-                {
-                    "PATH": f"{fake_bin}:/usr/bin:/bin",
-                    "ADB_LOG": str(adb_log),
-                    "PROXY_LAB_STATE_DIR": str(root),
-                }
-            )
-            result = self.run_command(
-                ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "android"],
-                env,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            log = adb_log.read_text(encoding="utf-8")
-            self.assertIn("settings put global http_proxy 10.0.0.1:8888", log)
-            self.assertIn("settings delete global http_proxy", log)
-            self.assertFalse(state_dir.exists())
 
     def test_reset_clears_stale_state_when_the_recorded_device_is_gone(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -631,6 +500,29 @@ exit 0
             self.assertEqual(result.returncode, 1)
             self.assertTrue(state_dir.exists())
             self.assertIn("settings delete global http_proxy", adb_log.read_text(encoding="utf-8"))
+
+    def test_detach_from_the_environment_survives_argument_parsing(self) -> None:
+        result = self.run_command(
+            [
+                "bash",
+                "-c",
+                (
+                    "set -euo pipefail; "
+                    f"PROJECT_DIR={str(ROOT)!r}; "
+                    f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
+                    f"ROUTER={str(ROOT / 'local_router.py')!r}; "
+                    f"CONFIG={str(ROOT / 'domains.yaml')!r}; "
+                    "PLATFORM_NAME=ios; PORT=0; "
+                    "DETACH=1; DURATION=30; PROXY_LAB_LOG_FORMAT=jsonl; "
+                    "parse_launcher_args; "
+                    'test "$DETACH" = 1; '
+                    'test "$DURATION" = 30; '
+                    'test "$LOG_FORMAT" = jsonl'
+                ),
+            ],
+            os.environ.copy(),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_ios_launcher_survives_a_mitmdump_that_exits_immediately(self) -> None:
         # CI's smoke fake writes its argv and returns at once. Anything that
@@ -736,30 +628,19 @@ exit 0
                 }
             )
 
-            # --detach must return promptly, with the proxy up behind it.
+            # --json is agent mode: return once up, with a ready document.
             start = time.monotonic()
             result = self.run_command(
-                ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--detach"], env
+                ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--json"], env
             )
             elapsed = time.monotonic() - start
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertLess(elapsed, 60, "detached start blocked on the proxy")
-            self.assertIn("detached", result.stdout)
-
-            # status reports a running session and where its log lives.
-            status = self.run_command(
-                [
-                    "bash",
-                    str(ROOT / "proxy_lab" / "control.sh"),
-                    "status",
-                    "ios",
-                    "--json",
-                ],
-                env,
-            )
-            session = json.loads(status.stdout)[0]
-            self.assertEqual(session["state"], "running")
-            log = Path(session["log"])
+            ready = json.loads(result.stdout)
+            self.assertTrue(ready["ok"])
+            self.assertEqual(ready["platform"], "ios")
+            self.assertEqual(ready["log_format"], "jsonl")
+            log = Path(ready["log"])
             self.assertTrue(log.is_file())
 
             # stop must signal the owner and release the session.

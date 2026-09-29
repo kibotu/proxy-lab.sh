@@ -1,4 +1,4 @@
-"""Mitmproxy addon that logs configured hosts without storing traffic."""
+"""Mitmproxy addon that logs configured hosts. It does not route traffic."""
 
 from __future__ import annotations
 

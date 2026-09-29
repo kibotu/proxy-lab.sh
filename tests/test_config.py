@@ -68,8 +68,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(redacted["Accept"], "application/json")
         self.assertEqual(redacted["User-Agent"], "okhttp/5.0")
         self.assertNotIn("hunter2", str(redacted))
-
-    def test_header_redaction_is_case_insensitive(self) -> None:
         self.assertEqual(
             redact_headers({"AUTHORIZATION": "Bearer x"}), {"AUTHORIZATION": "<r>"}
         )

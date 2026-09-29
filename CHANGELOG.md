@@ -9,14 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `start --detach` runs the proxy in the background and returns once it is
-  listening, so a scripted caller gets a real readiness signal instead of a
-  foreground process it cannot stop. `--duration SECONDS` bounds a run on the
-  foreground path as well. The detached run writes its output to a log that
-  outlives the session, readable with the new `proxy-lab logs` command
-  (`--follow`, `--lines N`).
-- `--json` on `status`, `stop`, `doctor`, and `logs`. The document is the last
-  line of stdout; the lines before it stay human-readable.
+- `start --json` is agent mode: it detaches, defaults traffic to jsonl, and
+  prints one ready document (`ok`, `pid`, `log`, `stop`) once the proxy is up.
+  `--detach` and `--duration` remain available on their own.
+- `--json` on `status`, `stop`, `doctor`, and `logs`. Stdout is only that
+  document. `doctor --json` includes `next`, the command to run when the
+  environment is usable.
 - `--log-format jsonl` emits one JSON object per request and per response, with
   method, status code, headers, body sizes, and timing, for consumption by
   `jq` or any line-oriented parser. Credential-bearing headers are redacted
@@ -25,11 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2 arguments, 3 config/input, 4 missing tool, 5 device/CA, 6 port,
   7 mitmproxy, 8 session state.
 - `proxy-lab init android` writes `network_security_config.xml` into the
-  project's debug resource tree and prints the manifest attribute to add. iOS
-  needs no file and says so.
-- `doctor` now reports whether a simulator is booted and that local capture
-  needs the network extension approved once through a GUI prompt that cannot be
-  scripted, instead of failing later with an unexplained hang.
+  project's debug resource tree, walks up from the current directory to find
+  that tree, and prints whether the manifest attribute is already present.
+  iOS needs no file and says so.
+- `doctor` reports whether a simulator is booted, warns on Play Store AVDs,
+  locates `adb` in the Android SDK without a PATH edit, and names the next
+  command. Local capture still needs the network extension approved once
+  through a GUI prompt that cannot be scripted.
 - Session state records the resolved mitmproxy version, its source, the log
   path, and the log format, all reported by `status`.
 - `AGENTS.md` documents the operational contract for coding agents.
@@ -38,11 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--detach` no longer leaves the launching process running alongside the
   detached child; the parent exits once the child reports itself ready.
+- `proxy-lab start --detach` honours `DETACH=1` from the environment. The
+  Python CLI talks in env vars; wiping them during bash argument parsing made
+  detached start a no-op.
 
 ### Changed
 
+- The uv fallback pins `mitmproxy==12.2.3`. A host `mitmdump` still wins.
+  Override with `MITMPROXY_SPEC`. `doctor` (not `start`) mentions a newer
+  PyPI release, so everyday runs do not phone home.
 - Documented `PROXY_LAB_MITMDUMP`, `MITMPROXY_SPEC`, and
-  `PROXY_LAB_SKIP_UPDATE_CHECK`, which were supported but undocumented.
+  `PROXY_LAB_SKIP_UPDATE_CHECK`.
 
 ## [2.0.2] - 2026-09-29
 

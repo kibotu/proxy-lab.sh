@@ -12,6 +12,7 @@ fi
 CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/common.sh"
+use_android_sdk
 
 OPERATION="${1:-}"
 [ "$#" -gt 0 ] && shift
@@ -250,10 +251,19 @@ doctor_check() {
   DOCTOR_NAME+=("$name")
   DOCTOR_DETAIL+=("$detail")
   [ "$status" = "fail" ] && DOCTOR_ISSUES=$((DOCTOR_ISSUES + 1))
+  [ "$JSON_OUTPUT" -eq 1 ] && return 0
   case "$status" in
     ok) info '✓' "$name" "$detail" ;;
     warn) info '!' "$name" "$detail" ;;
     *) info '✗' "$name" "$detail" ;;
+  esac
+}
+
+doctor_next() {
+  case "$PLATFORM" in
+    android) printf 'proxy-lab start android' ;;
+    ios) printf 'proxy-lab start ios' ;;
+    *) printf 'proxy-lab start android   # or: proxy-lab start ios' ;;
   esac
 }
 
@@ -266,6 +276,7 @@ doctor_json() {
   json_field 'state_directory' "$(state_root)"; printf ', '
   json_field 'version' "${PROXY_LAB_VERSION:-unknown}"; printf ', '
   json_field 'config' "$CONFIG"; printf ', '
+  json_field 'next' "$(doctor_next)"; printf ', '
   printf '"checks": ['
   for index in "${!DOCTOR_NAME[@]}"; do
     [ "$first" -eq 1 ] || printf ', '
@@ -279,11 +290,21 @@ doctor_json() {
 }
 
 run_doctor() {
-  printf '%s\n' 'proxy-lab doctor'
-  printf '%s\n' "  state directory: $(state_root)"
-  printf '%s\n' "  wrapper version: ${PROXY_LAB_VERSION:-unknown}"
-  printf '%s\n' "  config: $CONFIG"
-  printf '%s\n' "  CA: $HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+  local config_status mitmproxy_status version latest tool doctor_port listener
+  local booted avd_home play_avds avd_name devices emulator_bin
+
+  use_android_sdk
+
+  if [ "$JSON_OUTPUT" -ne 1 ]; then
+    printf '%s\n' 'proxy-lab doctor'
+    printf '%s\n' "  state directory: $(state_root)"
+    printf '%s\n' "  wrapper version: ${PROXY_LAB_VERSION:-unknown}"
+    printf '%s\n' "  config: $CONFIG"
+    printf '%s\n' "  CA: $HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+  fi
+
+  doctor_check ok 'version' "${PROXY_LAB_VERSION:-unknown}"
+
   if [ -f "$HOME/.mitmproxy/mitmproxy-ca-cert.pem" ]; then
     if command -v openssl >/dev/null 2>&1; then
       doctor_check ok 'CA fingerprint' "$(openssl x509 -in "$HOME/.mitmproxy/mitmproxy-ca-cert.pem" -noout -fingerprint -sha256 2>/dev/null || true)"
@@ -305,52 +326,81 @@ run_doctor() {
     esac
   fi
 
+  if command -v uv >/dev/null 2>&1; then
+    doctor_check ok 'uv' "$(command -v uv)"
+  else
+    doctor_check warn 'uv' 'not found — brew install uv  (required unless mitmdump is already on PATH)'
+  fi
+
   mitmproxy_status=0
   try_select_mitmproxy || mitmproxy_status=$?
   if [ "$mitmproxy_status" -eq 0 ]; then
-    local version
     version="$(mitmproxy_version || true)"
     if [ -n "$version" ]; then
       doctor_check ok 'mitmproxy' "$version via $MITMPROXY_SOURCE"
       if selected_platform ios && version_is_older "$version" "10.1.5"; then
         doctor_check fail 'mitmproxy' 'too old for iOS local capture (need 10.1.5+)'
       fi
+      latest="$(latest_mitmproxy_version || true)"
+      if [ -n "$latest" ] && version_is_older "$version" "$latest"; then
+        doctor_check warn 'mitmproxy' "newer on PyPI: $latest — MITMPROXY_SPEC=mitmproxy==$latest"
+      fi
     else
       doctor_check fail 'mitmproxy' 'could not run --version'
     fi
   else
-    doctor_check fail 'mitmproxy' 'not found'
+    doctor_check fail 'mitmproxy' 'not found — brew install uv, or brew install --cask mitmproxy'
   fi
 
   if selected_platform android; then
-    local tool
     for tool in adb openssl lsof; do
       if command -v "$tool" >/dev/null 2>&1; then
         doctor_check ok "$tool" "$(command -v "$tool")"
       else
-        doctor_check fail "$tool" 'not found'
+        case "$tool" in
+          adb) doctor_check fail 'adb' 'not found — install Android Studio, then re-run doctor (SDK paths are probed automatically)' ;;
+          *) doctor_check fail "$tool" 'not found' ;;
+        esac
       fi
     done
     if command -v adb >/dev/null 2>&1; then
-      printf '%s\n' '  adb devices:'
-      adb devices -l 2>&1 | sed 's/^/    /' || true
+      devices="$(adb devices 2>/dev/null | awk '$2 == "device" && $1 ~ /^emulator-/ { print $1 }' | paste -sd', ' -)"
+      if [ -n "$devices" ]; then
+        doctor_check ok 'emulator' "running: $devices"
+      else
+        doctor_check warn 'emulator' 'none running; start will boot the first AVD'
+      fi
     fi
-    if command -v emulator >/dev/null 2>&1; then
-      printf '%s\n' '  AVDs:'
-      emulator -list-avds 2>&1 | sed 's/^/    /' || true
+    emulator_bin="$(command -v emulator || true)"
+    if [ -n "$emulator_bin" ]; then
+      if [ "$JSON_OUTPUT" -ne 1 ]; then
+        printf '%s\n' '  AVDs:'
+        emulator -list-avds 2>&1 | sed 's/^/    /' || true
+      fi
+      avd_home="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+      play_avds=""
+      for avd_name in "$avd_home"/*.avd; do
+        [ -f "$avd_name/config.ini" ] || continue
+        if grep -Eiq 'playstore|google_apis_playstore' "$avd_name/config.ini"; then
+          play_avds="${play_avds:+$play_avds, }$(basename "$avd_name" .avd)"
+        fi
+      done
+      if [ -n "$play_avds" ]; then
+        doctor_check warn 'avd' "Play Store image(s): $play_avds — CA install needs a Google APIs image, not Play Store"
+      fi
     else
       doctor_check warn 'emulator' 'not found; only required when booting an AVD'
     fi
-    printf '%s\n' "  ANDROID_HOME: ${ANDROID_HOME:-unset}"
-    printf '%s\n' "  ANDROID_SDK_ROOT: ${ANDROID_SDK_ROOT:-unset}"
-    printf '%s\n' "  selected serial: ${SERIAL:-auto}"
-    local doctor_port="${PORT:-8080}"
+    if [ "$JSON_OUTPUT" -ne 1 ]; then
+      printf '%s\n' "  ANDROID_HOME: ${ANDROID_HOME:-unset}"
+      printf '%s\n' "  ANDROID_SDK_ROOT: ${ANDROID_SDK_ROOT:-unset}"
+      printf '%s\n' "  selected serial: ${SERIAL:-auto}"
+    fi
+    doctor_port="${PORT:-8080}"
     if command -v lsof >/dev/null 2>&1; then
-      local listener
       listener="$(lsof -nP -iTCP:"$doctor_port" -sTCP:LISTEN 2>/dev/null || true)"
       if [ -n "$listener" ]; then
-        printf '%s\n' '  port listener:'
-        printf '%s\n' "$listener" | sed 's/^/    /'
+        doctor_check warn "port $doctor_port" 'in use — stop the other listener, or: PORT=<other> proxy-lab start android'
       else
         doctor_check ok "port $doctor_port" 'free'
       fi
@@ -358,33 +408,41 @@ run_doctor() {
   fi
 
   if selected_platform ios; then
-    printf '%s\n' "  selected UDID: ${UDID:-auto}"
+    if [ "$JSON_OUTPUT" -ne 1 ]; then
+      printf '%s\n' "  selected UDID: ${UDID:-auto}"
+    fi
     if command -v xcrun >/dev/null 2>&1; then
       doctor_check ok 'xcrun' "$(command -v xcrun)"
-      printf '%s\n' '  booted simulators:'
-      local booted
-      booted="$(xcrun simctl list devices booted 2>&1 || true)"
-      printf '%s\n' "$booted" | sed 's/^/    /'
+      booted="$(xcrun simctl list devices booted 2>/dev/null || true)"
+      if [ "$JSON_OUTPUT" -ne 1 ]; then
+        printf '%s\n' '  booted simulators:'
+        printf '%s\n' "$booted" | sed 's/^/    /'
+      fi
       if printf '%s' "$booted" | grep -q '(Booted)'; then
         doctor_check ok 'simulator' 'a simulator is booted'
       else
-        doctor_check warn 'simulator' 'no booted simulator; start one in Xcode or Device Hub'
+        doctor_check warn 'simulator' 'none booted; start one in Xcode or Device Hub, then: proxy-lab start ios'
       fi
       # Local capture needs a signed network extension approved by the user.
       # There is no non-interactive way to read that approval, so say so
       # instead of letting `start` fail with an unexplained hang.
       doctor_check warn 'capture' \
-        'local capture needs the mitmproxy extension approved once, with a GUI prompt'
+        'first run: approve the mitmproxy network extension when macOS asks — there is no non-interactive check'
     else
-      doctor_check fail 'xcrun' 'not found'
+      doctor_check fail 'xcrun' 'not found — install Xcode and its command-line tools'
     fi
-    if command -v xcode-select >/dev/null 2>&1; then
+    if [ "$JSON_OUTPUT" -ne 1 ] && command -v xcode-select >/dev/null 2>&1; then
       printf '%s\n' "  Xcode: $(xcode-select -p 2>/dev/null || true)"
     fi
   fi
 
   if [ "$JSON_OUTPUT" -eq 1 ]; then
     doctor_json
+  elif [ "$DOCTOR_ISSUES" -eq 0 ]; then
+    printf '\nNext: %s\n' "$(doctor_next)"
+  else
+    printf '\nFix the ✗ checks, then: proxy-lab doctor%s\n' \
+      "$([ "$PLATFORM" = all ] && printf '' || printf ' %s' "$PLATFORM")"
   fi
 
   if [ "$DOCTOR_ISSUES" -ne 0 ]; then
@@ -395,6 +453,12 @@ run_doctor() {
 
 run_logs() {
   local directory log platform candidate found=0
+  local json_logs="" json_first=1
+
+  if [ "$JSON_OUTPUT" -eq 1 ] && [ "$FOLLOW" -eq 1 ]; then
+    fail 'arguments' '--json cannot be combined with --follow'
+  fi
+
   # A recorded session names its own log; a finished session's state is gone,
   # so fall back to the conventional path under the state root.
   for platform in android ios; do
@@ -420,6 +484,13 @@ run_logs() {
 
     [ -n "$log" ] || continue
     found=1
+    if [ "$JSON_OUTPUT" -eq 1 ]; then
+      [ "$json_first" -eq 1 ] || json_logs+=', '
+      json_first=0
+      json_logs+="$(printf '{"platform": "%s", "log": "%s"}' \
+        "$(json_escape "$platform")" "$(json_escape "$log")")"
+      continue
+    fi
     if [ "$FOLLOW" -eq 1 ]; then
       tail -n "${LINES:-0}" -f "$log"
     elif [ -n "$LINES" ]; then
@@ -436,6 +507,9 @@ run_logs() {
       printf '%s\n' 'No proxy-lab log found. Start one with: proxy-lab start <platform> --detach'
     fi
     return 1
+  fi
+  if [ "$JSON_OUTPUT" -eq 1 ]; then
+    printf '{"logs": [%s]}\n' "$json_logs"
   fi
   return 0
 }

@@ -19,6 +19,14 @@ else:
     LAUNCHER_ROOT = PACKAGE_DIR
 CONTROL_SCRIPT = PACKAGE_DIR / "control.sh"
 
+EPILOG = """\
+examples:
+  uvx proxy-lab start android
+  uvx proxy-lab start ios
+  uvx proxy-lab start android --json
+  uvx proxy-lab doctor android --json
+"""
+
 
 def _positive_int(value: str) -> int:
     try:
@@ -68,8 +76,8 @@ def _add_detach_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--log-format",
         choices=("text", "jsonl"),
-        default="text",
-        help="traffic output format (default: text)",
+        default=None,
+        help="traffic output format (default: text, or jsonl with --json)",
     )
 
 
@@ -103,32 +111,53 @@ def _add_control_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="proxy-lab",
-        description="Start and manage mitmproxy for Android emulators and iOS Simulators.",
+        description="mitmproxy for the Android emulator and the iOS Simulator.",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    start = commands.add_parser("start", help="run the platform proxy — stop with Ctrl-C")
-    start.add_argument("platform", choices=("android", "ios"))
-    start.add_argument("config", nargs="?", metavar="domains.yml")
-    start.add_argument(
-        "--config",
-        dest="config_option",
-        metavar="domains.yml",
-        help="domain list to log (alternative to the positional path)",
+    start = commands.add_parser(
+        "start",
+        help="run the platform proxy — stop with Ctrl-C",
+        description="Start mitmproxy for a platform. Ctrl-C (or stop) tears it down.",
     )
-    start.add_argument(
-        "-s",
-        "--script",
-        dest="scripts",
-        action="append",
-        default=[],
-        type=_existing_file,
-        help="mitmproxy addon script; may be repeated",
-    )
-    _add_device_options(start)
-    _add_detach_options(start)
-    _add_state_option(start)
+    platforms = start.add_subparsers(dest="platform", required=True)
+
+    def add_start_common(platform_parser: argparse.ArgumentParser) -> None:
+        platform_parser.add_argument(
+            "config",
+            nargs="?",
+            metavar="domains.yml",
+            help="domain list to log (default: the bundled domains.yaml)",
+        )
+        platform_parser.add_argument(
+            "--config",
+            dest="config_option",
+            metavar="domains.yml",
+            help="domain list (alternative to the positional path)",
+        )
+        platform_parser.add_argument(
+            "-s",
+            "--script",
+            dest="scripts",
+            action="append",
+            default=[],
+            type=_existing_file,
+            help="mitmproxy addon script; may be repeated",
+        )
+        _add_detach_options(platform_parser)
+        _add_json_option(platform_parser)
+        _add_state_option(platform_parser)
+
+    android = platforms.add_parser("android", help="proxy the Android emulator")
+    add_start_common(android)
+    _add_device_options(android, "android")
+
+    ios = platforms.add_parser("ios", help="proxy the iOS Simulator")
+    add_start_common(ios)
+    _add_device_options(ios, "ios")
 
     for name, help_text in (
         ("stop", "stop a recorded proxy-lab session"),
@@ -190,6 +219,19 @@ def _config_path(args: argparse.Namespace, parser: argparse.ArgumentParser) -> P
     return path.resolve()
 
 
+def _apply_start_defaults(args: argparse.Namespace) -> None:
+    """`--json` is agent mode: detach, jsonl traffic, JSON ready document."""
+
+    if getattr(args, "command", None) != "start":
+        return
+    if getattr(args, "json_output", False):
+        args.detach = True
+        if getattr(args, "log_format", None) is None:
+            args.log_format = "jsonl"
+    elif getattr(args, "log_format", None) is None:
+        args.log_format = "text"
+
+
 def _environment_for_start(args: argparse.Namespace, config: Path | None) -> dict[str, str]:
     env = os.environ.copy()
     if config is not None:
@@ -219,6 +261,8 @@ def _environment_for_start(args: argparse.Namespace, config: Path | None) -> dic
     log_format = getattr(args, "log_format", None)
     if log_format is not None:
         env["PROXY_LAB_LOG_FORMAT"] = log_format
+    if getattr(args, "json_output", False):
+        env["JSON_OUTPUT"] = "1"
     env["PROXY_LAB_PYTHON"] = sys.executable
     env["PROXY_LAB_VERSION"] = __version__
     return env
@@ -249,13 +293,42 @@ def _run_control(args: argparse.Namespace, operation: str) -> int:
     return subprocess.call(command, env=env)
 
 
+def _start_command(args: argparse.Namespace, script: Path) -> list[str]:
+    """Build the launcher argv. Env is the clone-script contract; argv is what
+    `parse_launcher_args` actually reads, so pass both."""
+
+    command = ["bash", str(script)]
+    if getattr(args, "detach", False):
+        command.append("--detach")
+    if getattr(args, "duration", None) is not None:
+        command.extend(("--duration", str(args.duration)))
+    log_format = getattr(args, "log_format", None)
+    if log_format and log_format != "text":
+        command.extend(("--log-format", log_format))
+    if getattr(args, "port", None) is not None:
+        command.extend(("--port", str(args.port)))
+    if getattr(args, "avd", None) is not None:
+        command.extend(("--avd", args.avd))
+    if getattr(args, "serial", None) is not None:
+        command.extend(("--serial", args.serial))
+    if getattr(args, "boot_timeout", None) is not None:
+        command.extend(("--boot-timeout", str(args.boot_timeout)))
+    if getattr(args, "udid", None) is not None:
+        command.extend(("--udid", args.udid))
+    if getattr(args, "json_output", False):
+        command.append("--json")
+    for path in getattr(args, "scripts", []) or []:
+        command.extend(("--script", str(path)))
+    return command
+
+
 def _run_start(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     config = _config_path(args, parser)
     env = _environment_for_start(args, config)
     script = LAUNCHER_ROOT / args.platform / "start-proxy.sh"
     if not script.is_file():
         parser.error(f"launcher missing: {script}")
-    command = ["bash", str(script)]
+    command = _start_command(args, script)
     # exec: the shell becomes the launcher, preserving signals and exit status.
     os.execvpe(command[0], command, env)
     return 0  # pragma: no cover - os.execvpe does not return
@@ -302,17 +375,44 @@ def _android_res_path(root: Path) -> Path | None:
     return None
 
 
+def _find_android_project(start: Path) -> Path:
+    """Walk up from *start* looking for a typical Android module layout."""
+
+    here = start.resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / "app" / "src").is_dir():
+            return candidate
+        if (candidate / "settings.gradle").is_file() or (
+            candidate / "settings.gradle.kts"
+        ).is_file():
+            return candidate
+    return here
+
+
+def _manifest_paths(root: Path) -> list[Path]:
+    return [
+        path
+        for path in (
+            root / "app" / "src" / "debug" / "AndroidManifest.xml",
+            root / "app" / "src" / "main" / "AndroidManifest.xml",
+        )
+        if path.is_file()
+    ]
+
+
 def _run_init(args: argparse.Namespace) -> int:
     root = Path(args.path).expanduser() if args.path else Path.cwd()
     written: list[str] = []
     skipped: list[str] = []
 
     if args.platform == "android":
+        root = _find_android_project(root)
         res = _android_res_path(root)
         if res is None:
             message = (
                 f"no app/src/debug/res or app/src/main/res under {root}; "
-                "create it, then re-run proxy-lab init android"
+                "create it, or pass --path to the Android project, then re-run "
+                "proxy-lab init android"
             )
             if args.json_output:
                 print(
@@ -341,14 +441,28 @@ def _run_init(args: argparse.Namespace) -> int:
             print(f"  i init        {message}")
         return 0
 
+    manifests = _manifest_paths(root)
+    manifest_ready = any(
+        "networkSecurityConfig" in path.read_text(encoding="utf-8")
+        for path in manifests
+    )
+    manifest_hint = (
+        "already set in AndroidManifest.xml"
+        if manifest_ready
+        else f"add {MANIFEST_SNIPPET} to the <application> tag in "
+        + (str(manifests[0]) if manifests else "AndroidManifest.xml")
+    )
+
     if args.json_output:
         print(
             json.dumps(
                 {
                     "platform": "android",
+                    "project": str(root),
                     "written": written,
                     "unchanged": skipped,
                     "manifest_attribute": MANIFEST_SNIPPET,
+                    "manifest_ready": manifest_ready,
                 }
             )
         )
@@ -358,13 +472,14 @@ def _run_init(args: argparse.Namespace) -> int:
         print(f"  ✓ init        wrote {path}")
     for path in skipped:
         print(f"  ✓ init        already up to date: {path}")
-    print(f"  → init        add {MANIFEST_SNIPPET} to the <application> tag in AndroidManifest.xml")
+    print(f"  → init        {manifest_hint}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _apply_start_defaults(args)
     _validate_platform_options(parser, args)
 
     if args.command == "start":
