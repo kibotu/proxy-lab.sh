@@ -309,6 +309,27 @@ state_owner_matches() {
   esac
 }
 
+# Only a session that is provably not ours is adopted: a recorded owner that is
+# gone, or a PID that has since been recycled, can never release its own state.
+# Such a PID is never signalled — it is not the process we recorded.
+state_adopt_stale() {
+  local directory="$1" restore_status=0 serial
+  state_restore_android_proxy "$directory" || restore_status=$?
+  case "$restore_status" in
+    0) ;;
+    2)
+      serial="$(state_read_from "$directory" serial)"
+      info '!' 'session' "${serial:-the recorded device} is not reachable; its proxy was not restored"
+      ;;
+    *)
+      printf '  ! %-11s %s\n' 'session' \
+        'could not restore the proxy left behind by the stopped session' >&2
+      ;;
+  esac
+  rm -rf "$directory"
+  mkdir "$directory" 2>/dev/null
+}
+
 state_acquire() {
   local platform="$1" port="${2:-0}" owner
   umask 077
@@ -322,12 +343,18 @@ state_acquire() {
 
   if ! mkdir "$STATE_DIR" 2>/dev/null; then
     owner="$(state_read_from "$STATE_DIR" owner)"
-    if state_pid_alive "$owner"; then
+    if state_pid_alive "$owner" && state_owner_matches "$STATE_DIR"; then
       fail 'session' "another proxy-lab session is active for $platform" \
         "run: proxy-lab status $platform"
     fi
-    fail 'session' "stale state exists: $STATE_DIR" \
-      "run: proxy-lab reset $platform"
+    if state_pid_alive "$owner"; then
+      info '!' 'session' "PID $owner is not the recorded owner; reclaiming its state"
+    else
+      info '!' 'session' 'reclaiming state left by a stopped session'
+    fi
+    state_adopt_stale "$STATE_DIR" ||
+      fail 'session' "stale state exists: $STATE_DIR" \
+        "run: proxy-lab reset $platform"
   fi
 
   STATE_ACQUIRED=1

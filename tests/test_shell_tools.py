@@ -222,6 +222,99 @@ esac
             )
             self.assertFalse((session_state / "android-18999").exists())
 
+    def test_state_acquire_reclaims_a_stopped_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "android-8080"
+            state_dir.mkdir()
+            (state_dir / "owner").write_text("999999\n", encoding="utf-8")
+            (state_dir / "platform").write_text("android\n", encoding="utf-8")
+            (state_dir / "serial").write_text("emulator-5554\n", encoding="utf-8")
+            (state_dir / "previous_proxy").write_text("10.0.0.1:8888\n", encoding="utf-8")
+            adb_log = root / "adb.log"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_adb = fake_bin / "adb"
+            fake_adb.write_text(
+                """#!/usr/bin/env bash
+printf '%s\\n' \"$*\" >> \"$ADB_LOG\"
+if [ \"$1\" = devices ]; then
+  printf '%s\\n' 'List of devices attached' 'emulator-5554 device'
+fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_adb.chmod(0o755)
+            adb_log.write_text("", encoding="utf-8")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "ADB_LOG": str(adb_log),
+                    "PROXY_LAB_STATE_DIR": str(root),
+                }
+            )
+
+            result = self.run_command(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        "set -euo pipefail; "
+                        f"PROJECT_DIR={str(ROOT)!r}; "
+                        f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
+                        "state_acquire android 8080; "
+                        'test "$(cat "$STATE_DIR/platform")" = android; '
+                        'test "$(cat "$STATE_DIR/previous_proxy")" = "" || '
+                        'test ! -f "$STATE_DIR/previous_proxy"; '
+                        "state_release; "
+                        'test ! -d "$STATE_DIR"'
+                    ),
+                ],
+                env,
+            )
+
+            # start must clear the stale slot itself, restoring the proxy the
+            # stopped session left behind.
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("reclaiming state", result.stdout)
+            self.assertIn("settings put global http_proxy 10.0.0.1:8888", adb_log.read_text(encoding="utf-8"))
+
+    def test_state_acquire_refuses_a_live_proxy_lab_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "android-8080"
+            state_dir.mkdir()
+            owner = subprocess.Popen(
+                ["bash", "-c", 'exec -a "bash /x/start-proxy.sh" sleep 30']
+            )
+            try:
+                (state_dir / "owner").write_text(f"{owner.pid}\n", encoding="utf-8")
+                (state_dir / "platform").write_text("android\n", encoding="utf-8")
+                result = self.run_command(
+                    [
+                        "bash",
+                        "-c",
+                        (
+                            "set -euo pipefail; "
+                            f"PROJECT_DIR={str(ROOT)!r}; "
+                            f"source {str(ROOT / 'proxy_lab' / 'common.sh')!r}; "
+                            "state_acquire android 8080"
+                        ),
+                    ],
+                    {**os.environ, "PROXY_LAB_STATE_DIR": str(root)},
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("another proxy-lab session is active", result.stderr)
+                self.assertEqual(
+                    (state_dir / "owner").read_text(encoding="utf-8"), f"{owner.pid}\n"
+                )
+            finally:
+                owner.kill()
+                owner.wait()
+
     def test_stop_does_not_kill_an_unowned_pid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_dir = Path(directory) / "ios"

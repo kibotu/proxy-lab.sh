@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-29
+
+### Fixed
+
+- `start` now recovers from a stale session on its own instead of asking for a manual
+  `proxy-lab reset`. State left by a session that is no longer running can never be
+  released by that session, so it is reclaimed at startup — restoring the proxy the
+  stopped run had captured first, so the new run does not record proxy-lab's own
+  leftover setting as the user's.
+- A session is only reclaimed when the recorded owner is gone or its PID has been
+  recycled; such a PID is never signalled, and a live proxy-lab session still refuses
+  to start, exactly as before.
+
 ## [2.0.1] - 2026-09-29
 
 ### Fixed
