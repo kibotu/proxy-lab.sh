@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-29
+
 ### Added
 
 - `start --json` is agent mode: it detaches, defaults traffic to jsonl, and
@@ -41,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `proxy-lab start --detach` honours `DETACH=1` from the environment. The
   Python CLI talks in env vars; wiping them during bash argument parsing made
   detached start a no-op.
+- `start ios` no longer fails a session that was actually healthy. Local
+  capture has no listening port to poll, so the launcher slept a second and
+  checked whether mitmdump was still alive — a guess that read a quickly
+  finishing mitmdump as a failed start and exited 7, failing the CI smoke job
+  on both platforms. Readiness is now declared directly. An unapproved network
+  extension still fails, because mitmdump reports it and exits on its own.
 
 ### Changed
 
