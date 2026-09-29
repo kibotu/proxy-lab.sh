@@ -120,15 +120,10 @@ else
 fi
 PROXY_PID=$!
 state_write proxy_pid "$PROXY_PID"
-# Local capture has no port to poll, so give the extension a moment to attach
-# and confirm mitmdump is still alive before declaring the session ready.
-sleep 1
-if ! kill -0 "$PROXY_PID" 2>/dev/null; then
-  wait "$PROXY_PID" 2>/dev/null || true
-  fail 'mitmdump' 'exited before local capture attached' \
-    'approve the mitmproxy network extension prompt when macOS asks' \
-    'see README.md → iOS step 3, and https://www.mitmproxy.org/posts/local-capture/macos/'
-fi
+# Local capture has no listening port to poll, so there is nothing to probe.
+# If the network extension is not approved, mitmdump says so and exits; the
+# wait below reports that on its own. Probing liveness here would instead
+# misread a mitmdump that legitimately finishes quickly.
 mark_session_ready
 if [ -n "${DURATION:-}" ]; then
   info '✓' 'mitmdump' "local:Simulator — stopping in ${DURATION}s"

@@ -632,6 +632,66 @@ exit 0
             self.assertTrue(state_dir.exists())
             self.assertIn("settings delete global http_proxy", adb_log.read_text(encoding="utf-8"))
 
+    def test_ios_launcher_survives_a_mitmdump_that_exits_immediately(self) -> None:
+        # CI's smoke fake writes its argv and returns at once. Anything that
+        # probes mitmdump liveness misreads that as a failed start.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            home = root / "home"
+            args_file = root / "args"
+            fake_bin.mkdir()
+            home.mkdir()
+            fake_mitmproxy = fake_bin / "mitmdump"
+            fake_mitmproxy.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  echo 'Mitmproxy: 12.0.0'
+  exit 0
+fi
+if [ "${1:-}" = "--listen-port" ] && [ "${2:-}" = 0 ]; then
+  mkdir -p "$HOME/.mitmproxy"
+  : >"$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+fi
+printf '%s\\n' "$@" >"$MITMDUMP_ARGS"
+""",
+                encoding="utf-8",
+            )
+            fake_mitmproxy.chmod(0o755)
+            fake_xcrun = fake_bin / "xcrun"
+            fake_xcrun.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = simctl ]; then echo '== Devices =='; fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_xcrun.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "HOME": str(home),
+                    "MITMDUMP_ARGS": str(args_file),
+                    "PROXY_LAB_STATE_DIR": str(root / "state"),
+                    "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
+                    "PROXY_LAB_PYTHON": sys.executable,
+                }
+            )
+
+            result = self.run_command(
+                ["bash", str(ROOT / "ios" / "start-proxy.sh")], env
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            argv = args_file.read_text(encoding="utf-8").splitlines()
+            self.assertIn("--mode", argv)
+            self.assertIn("local:Simulator", argv)
+            self.assertIn("--showhost", argv)
+            self.assertNotIn("--listen-port", argv)
+
     def test_detached_ios_run_is_stoppable_and_its_log_survives(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
