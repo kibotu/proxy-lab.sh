@@ -171,11 +171,12 @@ if [ "$CAPTURE_MODE" = "proxy" ]; then
   state_write previous_ios_web "$(ios_proxy_read "$service" web)"
   state_write previous_ios_secureweb "$(ios_proxy_read "$service" secureweb)"
   state_write previous_ios_service "$service"
-  networksetup -setwebproxy "$service" 127.0.0.1 "$PROXY_PORT" >/dev/null 2>&1 &&
-    networksetup -setsecurewebproxy "$service" 127.0.0.1 "$PROXY_PORT" >/dev/null 2>&1 ||
+  if ! { networksetup -setwebproxy "$service" 127.0.0.1 "$PROXY_PORT" &&
+    networksetup -setsecurewebproxy "$service" 127.0.0.1 "$PROXY_PORT"; } >/dev/null 2>&1; then
     fail 'proxy' "couldn't set the proxy on $service" \
       'macOS may want admin rights — try once more from an admin account' \
       'or use local capture: PROXY_LAB_IOS_MODE=local proxy-lab start ios'
+  fi
   state_write port "$PROXY_PORT"
   info '✓' 'proxy' "$service → 127.0.0.1:$PROXY_PORT (restored on stop)"
 fi

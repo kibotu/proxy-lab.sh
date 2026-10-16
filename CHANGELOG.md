@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-10-16
+
 ### Added
 
 - iOS reaches dev hosts that `/etc/hosts` points at localhost, such as a local
@@ -18,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PROXY_LAB_IOS_MODE=local|proxy` forces a mode. `PROXY_LAB_IOS_PORT` sets the
   proxy-mode port (default 8080). `PROXY_LAB_HOSTS_FILE` points the detection
   at another hosts file.
+
+### Fixed
+
+- Release 2.3.1 failed its version check and was never published; 2.3.2 carries
+  the same changes with a matching `pyproject.toml`.
 
 ### Changed
 
