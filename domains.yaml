@@ -1,4 +1,7 @@
-# Host suffixes logged as [local_router] by local_router.py.
+# Example domains file. Pass it to proxy-lab to capture exactly these hosts:
+#   proxy-lab start android domains.yaml
+# Without one, proxy-lab captures the host names in /etc/hosts. Only listed
+# hosts are intercepted; everything else passes through untouched.
 # Matching is literal: a leading dot is safest for subdomains; without one,
 # "acme.dev" also matches names such as "notacme.dev".
 domains:

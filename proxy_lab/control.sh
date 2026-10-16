@@ -4,12 +4,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/../local_router.py" ] && [ -f "$SCRIPT_DIR/../domains.yaml" ]; then
-  PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-else
-  PROJECT_DIR="$SCRIPT_DIR"
-fi
-CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
+# Optional. Without a domains file, the hosts in /etc/hosts are what gets captured.
+CONFIG="${PROXY_LAB_CONFIG:-}"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/common.sh"
 use_android_sdk
@@ -179,10 +175,11 @@ stop_one() {
   fi
 
   if ! state_restore_ios_proxy "$directory"; then
-    printf '  ✗ %-11s %s\n' 'stop' "couldn't restore your Mac proxy — run: proxy-lab reset ios" >&2
+    printf '  ✗ %-11s %s\n' 'stop' "couldn't put your Mac's proxy setting back — run: proxy-lab reset ios" >&2
     STOP_DETAIL="couldn't restore the Mac proxy; run reset"
     return 1
   fi
+  state_stop_recorded_proxy "$directory"
   if [ -f "$directory/platform" ] && [ "$(state_read_from "$directory" platform)" = "android" ]; then
     state_restore_android_proxy "$directory" || restore_status=$?
     case "$restore_status" in
@@ -218,6 +215,7 @@ reset_one() {
   if state_pid_alive "$owner" && ! state_owner_matches "$directory"; then
     printf '  ! %-11s PID %s is not the recorded owner; removing state without signalling it\n' \
       'reset' "$owner" >&2
+    state_stop_recorded_proxy "$directory"
     rm -rf "$directory"
     return 0
   fi
@@ -280,7 +278,7 @@ doctor_json() {
   printf '"issues": %d, ' "$DOCTOR_ISSUES"
   json_field 'state_directory' "$(state_root)"; printf ', '
   json_field 'version' "${PROXY_LAB_VERSION:-unknown}"; printf ', '
-  json_field 'config' "$CONFIG"; printf ', '
+  json_field 'config' "${CONFIG:-/etc/hosts}"; printf ', '
   json_field 'next' "$(doctor_next)"; printf ', '
   printf '"checks": ['
   for index in "${!DOCTOR_NAME[@]}"; do
@@ -304,7 +302,7 @@ run_doctor() {
     printf '%s\n' 'proxy-lab doctor'
     printf '%s\n' "  state directory: $(state_root)"
     printf '%s\n' "  wrapper version: ${PROXY_LAB_VERSION:-unknown}"
-    printf '%s\n' "  config: $CONFIG"
+    printf '%s\n' "  config: ${CONFIG:-/etc/hosts}"
     printf '%s\n' "  CA: $HOME/.mitmproxy/mitmproxy-ca-cert.pem"
   fi
 
@@ -321,10 +319,17 @@ run_doctor() {
   fi
 
   config_status=0
-  validate_config_file || config_status=$?
-  if [ "$config_status" -eq 0 ]; then
-    doctor_check ok 'config' "$CONFIG"
+  if [ -z "$CONFIG" ]; then
+    capture_names="$(capture_host_names | wc -l | tr -d ' ')"
+    if [ "$capture_names" -gt 0 ]; then
+      doctor_check ok 'domains' "$capture_names hosts from /etc/hosts — nothing else is intercepted"
+    else
+      doctor_check fail 'domains' 'nothing to capture — add your dev hosts to /etc/hosts, or pass a domains.yml'
+    fi
+  elif validate_config_file; then
+    doctor_check ok 'config' "$CONFIG — only these hosts are intercepted"
   else
+    config_status=$?
     case "$config_status" in
       2) doctor_check warn 'config' 'Python unavailable; file existence was not validated' ;;
       *) doctor_check fail 'config' "invalid: $CONFIG" ;;
@@ -452,19 +457,16 @@ run_doctor() {
       # captures nothing — so the state is read rather than hoped for. The
       # first run is the only case macOS still prompts for; after that the
       # prompt does not come back on its own.
-      case "$(ios_capture_mode)$(mitmproxy_extension_state)" in
-        proxy*)
-          doctor_check ok 'extension' 'not needed in system-proxy mode'
-          ;;
-        *approved)
+      case "$(mitmproxy_extension_state)" in
+        approved)
           doctor_check ok 'extension' 'mitmproxy network extension approved'
           ;;
-        *pending)
+        pending)
           doctor_check fail 'extension' \
             "installed but not approved, so local capture will not see any traffic — open \"$EXTENSION_SETTINGS_PANE\" and allow mitmproxy, then re-run" \
             "or from a terminal: open \"$EXTENSION_SETTINGS_PANE\""
           ;;
-        *absent)
+        absent)
           doctor_check warn 'extension' \
             'not installed yet; the first proxy-lab start ios installs it and macOS asks you to allow it'
           ;;
@@ -476,11 +478,15 @@ run_doctor() {
     else
       doctor_check fail 'xcrun' 'not found — install Xcode and its command-line tools'
     fi
-    if [ "$(ios_capture_mode)" = "proxy" ]; then
-      doctor_check ok 'capture' \
-        "system proxy — $(loopback_hosts | wc -l | tr -d ' ') dev hosts in /etc/hosts point at localhost, beyond local capture's reach"
-    else
-      doctor_check ok 'capture' 'local capture — no localhost dev hosts in /etc/hosts'
+    loopback_names="$(loopback_hosts | paste -sd' ' -)"
+    if [ -n "$loopback_names" ]; then
+      doctor_check warn 'localhost' \
+        "$(printf '%s' "$loopback_names" | wc -w | tr -d ' ') /etc/hosts names point at localhost, which local capture can't see — to capture them: proxy-lab start ios --system-proxy"
+    fi
+    leftover="$(ios_leftover_pacs | head -n 1)"
+    if [ -n "$leftover" ]; then
+      doctor_check fail 'system proxy' \
+        "a proxy-lab auto-config is still set on ${leftover%%|*} with no session behind it — run: proxy-lab reset ios"
     fi
   fi
 
@@ -626,6 +632,7 @@ case "$OPERATION" in
         reset_one "$directory" || result=1
       done < <(state_directories "$platform")
     done
+    case "$PLATFORM" in ios|all) ios_clear_leftover_pacs ;; esac
     if [ "$PLATFORM" = "android" ]; then
       clear_android_proxy
       found=1

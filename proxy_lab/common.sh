@@ -22,7 +22,7 @@ EXTENSION_SETTINGS_PANE="x-apple.systempreferences:com.apple.LoginItems-Settings
 label_exit_code() {
   case "$1" in
     arguments) printf '2' ;;
-    config|addon|router) printf '3' ;;
+    config|addon|router|domains) printf '3' ;;
     tools) printf '4' ;;
     emulator|root|device\ CA|host\ CA|simulator|proxy|extension) printf '5' ;;
     port*) printf '6' ;;
@@ -135,6 +135,11 @@ parse_launcher_args() {
         TRUST_ONLY=1
         shift
         ;;
+      --system-proxy)
+        # shellcheck disable=SC2034 # consumed by the iOS launcher
+        SYSTEM_PROXY=1
+        shift
+        ;;
       --detach)
         DETACH=1
         shift
@@ -174,7 +179,7 @@ parse_launcher_args() {
   export PROXY_LAB_LOG_FORMAT="$LOG_FORMAT"
   export JSON_OUTPUT
   ROUTER="$(resolve_file "$ROUTER" 'router')"
-  CONFIG="$(resolve_file "$CONFIG" 'config')"
+  [ -z "$CONFIG" ] || CONFIG="$(resolve_file "$CONFIG" 'config')"
   MITMDUMP_SCRIPT_ARGS=(-s "$ROUTER")
   index=0
   for script in ${ADDON_SCRIPTS[@]+"${ADDON_SCRIPTS[@]}"}; do
@@ -230,9 +235,9 @@ mitmproxy_extension_state() {
 
 # macOS local capture never sees loopback traffic. A local docker stack is
 # usually reached through /etc/hosts entries that point at 127.0.0.1, and those
-# requests go straight to the container, unproxied and unlogged, while mitmdump
-# reports itself healthy. Print the host names that /etc/hosts maps to loopback
-# (one per line, `localhost` excluded) so the caller can say what to change.
+# requests go straight to the container: unproxied, unlogged, while mitmdump
+# reports itself healthy. Print the names that /etc/hosts maps to loopback (one
+# per line, stock entries excluded) so `doctor` and `start` can say so.
 loopback_hosts() {
   local hosts_file="${PROXY_LAB_HOSTS_FILE:-/etc/hosts}"
   [ -r "$hosts_file" ] || return 0
@@ -247,19 +252,12 @@ loopback_hosts() {
   ' "$hosts_file" | sort -u
 }
 
-# The Simulator follows the Mac's network settings. When dev hosts resolve to
-# loopback, capture has to come through the system proxy instead. These helpers
-# find the active network service, record what it had, and put it back.
-ios_capture_mode() {
-  case "${PROXY_LAB_IOS_MODE:-}" in
-    local|proxy) printf '%s' "$PROXY_LAB_IOS_MODE"; return 0 ;;
-  esac
-  if [ -n "$(loopback_hosts)" ]; then
-    printf 'proxy'
-  else
-    printf 'local'
-  fi
-}
+# `start ios --system-proxy` is the one opt-in way proxy-lab touches macOS
+# settings, and only for as long as a session runs. The Simulator follows the
+# Mac's proxy settings, which is the only way to reach hosts that /etc/hosts
+# points at localhost. A small proxy auto-config file sends just your hosts to
+# mitmproxy; everything else stays direct. The previous setting is recorded
+# first and put back on stop, reset, and the next start.
 
 # The network service behind the default route, e.g. "Wi-Fi".
 ios_network_service() {
@@ -270,30 +268,6 @@ ios_network_service() {
     /^\([0-9]+\)/ { name = $0; sub(/^\([0-9]+\) /, "", name) }
     index($0, "Device: " dev ")") { print name; exit }
   '
-}
-
-# "yes|server|port" for one proxy kind (web or secureweb).
-ios_proxy_read() {
-  local service="$1" kind="$2" out enabled server port
-  out="$(networksetup "-get${kind}proxy" "$service" 2>/dev/null)" || return 1
-  enabled="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Enabled" { print tolower($2) }')"
-  server="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Server" { print $2 }')"
-  port="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Port" { print $2 }')"
-  printf '%s|%s|%s' "$enabled" "$server" "$port"
-}
-
-ios_proxy_apply() {
-  local service="$1" kind="$2" record="$3" enabled server port
-  IFS='|' read -r enabled server port <<<"$record"
-  if [ "$enabled" = "yes" ] && [ -n "$server" ]; then
-    networksetup "-set${kind}proxy" "$service" "$server" "$port" >/dev/null 2>&1 || return 1
-  else
-    # Put the old address back too, so a disabled entry keeps what it had.
-    if [ -n "$server" ] && [ "$port" != "0" ]; then
-      networksetup "-set${kind}proxy" "$service" "$server" "$port" >/dev/null 2>&1 || return 1
-    fi
-    networksetup "-set${kind}proxystate" "$service" off >/dev/null 2>&1 || return 1
-  fi
 }
 
 # "yes|url" for the automatic proxy configuration (PAC) of a service.
@@ -312,6 +286,7 @@ ios_autoproxy_apply() {
   if [ "$enabled" = "yes" ] && [ -n "$url" ]; then
     networksetup -setautoproxyurl "$service" "$url" >/dev/null 2>&1 || return 1
   else
+    # Keep the old address on a disabled entry, as it was.
     if [ -n "$url" ]; then
       networksetup -setautoproxyurl "$service" "$url" >/dev/null 2>&1 || return 1
     fi
@@ -319,16 +294,61 @@ ios_autoproxy_apply() {
   fi
 }
 
-# Write the PAC that routes only dev hosts (config domains plus loopback hosts
-# from /etc/hosts) through the proxy, and serve it on loopback. Prints the URL.
-# The server pid is recorded so stop and reset can end it.
+# A proxy-lab PAC is always served from loopback as /proxy.pac.
+ios_pac_is_ours() {
+  case "$1" in
+    http://127.0.0.1:*/proxy.pac) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Network services that still carry a proxy-lab PAC with no live session behind
+# it. One line each: "service|url".
+ios_leftover_pacs() {
+  local service record url
+  command -v networksetup >/dev/null 2>&1 || return 0
+  state_owner_matches "$(state_root)/ios" && return 0
+  while IFS= read -r service; do
+    [ -n "$service" ] || continue
+    record="$(ios_autoproxy_read "$service" || true)"
+    case "$record" in yes\|*) ;; *) continue ;; esac
+    url="${record#*|}"
+    ios_pac_is_ours "$url" || continue
+    printf '%s|%s\n' "$service" "$url"
+  done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | sed 's/^\*//')
+}
+
+ios_clear_leftover_pacs() {
+  local line service
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    service="${line%%|*}"
+    networksetup -setautoproxystate "$service" off >/dev/null 2>&1 &&
+      info '✓' 'cleanup' "cleared a leftover proxy-lab auto-config on $service"
+  done < <(ios_leftover_pacs)
+}
+
+# A free loopback port, chosen by the OS.
+free_local_port() {
+  local python_bin="${PROXY_LAB_PYTHON:-}"
+  [ -n "$python_bin" ] || python_bin="$(command -v python3 || true)"
+  [ -n "$python_bin" ] || return 1
+  "$python_bin" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+
+# Write the PAC for the hosts to capture and serve it on loopback. Prints the
+# URL. The server pid is recorded so stop and reset can end it.
 ios_pac_serve() {
   local proxy="$1" pac_dir="$STATE_DIR/pac" python_bin="${PROXY_LAB_PYTHON:-}" port server_pid
   [ -n "$python_bin" ] || python_bin="$(command -v python3 || true)"
   [ -n "$python_bin" ] || return 1
   mkdir -p "$pac_dir"
-  loopback_hosts | "$python_bin" -m proxy_lab.pac "$CONFIG" "$proxy" >"$pac_dir/proxy.pac" || return 1
-  port="$("$python_bin" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')" || return 1
+  if [ -n "$CONFIG" ]; then
+    "$python_bin" -m proxy_lab.pac "$proxy" "$CONFIG" >"$pac_dir/proxy.pac" || return 1
+  else
+    capture_host_names | "$python_bin" -m proxy_lab.pac "$proxy" >"$pac_dir/proxy.pac" || return 1
+  fi
+  port="$(free_local_port)" || return 1
   "$python_bin" -m http.server "$port" --bind 127.0.0.1 --directory "$pac_dir" >/dev/null 2>&1 &
   server_pid=$!
   state_write pac_pid "$server_pid"
@@ -337,9 +357,8 @@ ios_pac_serve() {
   printf 'http://127.0.0.1:%s/proxy.pac' "$port"
 }
 
-# Signals the terminal sends to the whole foreground group must not reach the
-# networksetup calls of a restore: a second Ctrl-C there leaves the Mac proxied.
-# Children inherit an ignored signal, so ignore for the duration of the call.
+# Ctrl-C reaches the whole foreground group, so a second one must not interrupt
+# the restore it is waiting on. Children inherit an ignored signal.
 state_restore_ios_proxy() {
   local directory="$1" status=0
   trap '' INT TERM HUP
@@ -358,13 +377,7 @@ state_restore_ios_proxy_now() {
   fi
   [ -f "$directory/previous_ios_service" ] || return 0
   service="$(state_read_from "$directory" previous_ios_service)"
-  if [ -f "$directory/previous_ios_auto" ]; then
-    ios_autoproxy_apply "$service" "$(state_read_from "$directory" previous_ios_auto)" || return 1
-  fi
-  if [ -f "$directory/previous_ios_web" ]; then
-    ios_proxy_apply "$service" web "$(state_read_from "$directory" previous_ios_web)" || return 1
-    ios_proxy_apply "$service" secureweb "$(state_read_from "$directory" previous_ios_secureweb)" || return 1
-  fi
+  ios_autoproxy_apply "$service" "$(state_read_from "$directory" previous_ios_auto)"
 }
 
 # Can simctl run under this developer dir? Command Line Tools are a legal
@@ -584,16 +597,43 @@ except ConfigError as exc:
 PY
 }
 
-# Only status 1 means the file is invalid; anything else means Python could
-# not run the check, which mitmproxy will then do on load.
+# Every host name /etc/hosts defines on purpose, any address, one per line.
+capture_host_names() {
+  local hosts_file="${PROXY_LAB_HOSTS_FILE:-/etc/hosts}"
+  [ -r "$hosts_file" ] || return 0
+  awk '
+    /^[[:space:]]*#/ { next }
+    {
+      for (i = 2; i <= NF; i++) {
+        if ($i ~ /^#/) break
+        if ($i != "localhost" && $i != "broadcasthost" && $i !~ /^ip6-/) print tolower($i)
+      }
+    }
+  ' "$hosts_file" | sort -u
+}
+
+# Say what will be intercepted, and stop if the answer is "nothing". Only host
+# names from a domains file, or else from /etc/hosts, are ever intercepted:
+# this is a local-development tool, not a tool for watching all your traffic.
+# Status 1 from the validator means an invalid file; anything else means Python
+# could not run the check, which mitmproxy will then do on load.
 require_config_file() {
-  local status=0
-  validate_config_file || status=$?
-  case "$status" in
-    0) info '✓' 'config' "$CONFIG" ;;
-    1) fail 'config' "invalid config: $CONFIG" "fix the domains list; see README.md" ;;
-    *) info '!' 'config' "deferred validation to mitmproxy: $CONFIG" ;;
-  esac
+  local status=0 count
+  if [ -n "$CONFIG" ]; then
+    validate_config_file || status=$?
+    case "$status" in
+      0) info '✓' 'domains' "$CONFIG — only these hosts are intercepted" ;;
+      1) fail 'config' "invalid config: $CONFIG" "fix the domains list; see README.md" ;;
+      *) info '!' 'domains' "deferred validation to mitmproxy: $CONFIG" ;;
+    esac
+    export PROXY_LAB_CONFIG="$CONFIG"
+    return 0
+  fi
+  count="$(capture_host_names | wc -l | tr -d ' ')"
+  [ "$count" -gt 0 ] || fail 'domains' 'nothing to capture' \
+    'add your dev hosts to /etc/hosts' \
+    'or list them in a domains file: proxy-lab start <platform> domains.yml'
+  info '✓' 'domains' "$count hosts from /etc/hosts — nothing else is intercepted"
 }
 
 state_root() {
@@ -652,10 +692,33 @@ state_owner_matches() {
 # Only a session that is provably not ours is adopted: a recorded owner that is
 # gone, or a PID that has since been recycled, can never release its own state.
 # Such a PID is never signalled — it is not the process we recorded.
+# A launcher that was killed outright cannot clean up after itself, and its
+# mitmdump carries on. For iOS that means traffic still being redirected to a
+# proxy nobody reads. End the recorded one, but only if the PID is still a
+# mitmproxy: a recycled PID belongs to someone else and is left alone.
+state_stop_recorded_proxy() {
+  local directory="$1" pid command waited=0
+  pid="$(state_read_from "$directory" proxy_pid)"
+  state_pid_alive "$pid" || return 0
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in
+    *mitmdump*|*mitmproxy*) ;;
+    *) return 0 ;;
+  esac
+  kill -TERM "$pid" 2>/dev/null || true
+  while state_pid_alive "$pid" && [ "$waited" -lt 20 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  state_pid_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  info '✓' 'cleanup' "ended a leftover mitmdump (pid $pid)"
+}
+
 state_adopt_stale() {
   local directory="$1" restore_status=0 serial
+  state_stop_recorded_proxy "$directory"
   state_restore_ios_proxy "$directory" ||
-    fail 'session' 'could not restore the Mac proxy left by a stopped session' \
+    fail 'session' "couldn't put your Mac's proxy setting back" \
       'run: proxy-lab reset ios'
   state_restore_android_proxy "$directory" || restore_status=$?
   case "$restore_status" in
@@ -718,7 +781,7 @@ state_acquire() {
   state_write owner_start "$(ps -p "$$" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//')"
   state_write platform "$platform"
   state_write port "$port"
-  state_write config "${CONFIG:-${PROJECT_DIR:-.}/domains.yaml}"
+  state_write config "${CONFIG:-${PROXY_LAB_HOSTS_FILE:-/etc/hosts}}"
   [ -z "${UDID:-}" ] || state_write udid "$UDID"
   [ -z "${LOG_FORMAT:-}" ] || state_write log_format "$LOG_FORMAT"
   [ -z "${DURATION:-}" ] || state_write duration "$DURATION"

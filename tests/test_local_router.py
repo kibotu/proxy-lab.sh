@@ -13,18 +13,26 @@ from unittest.mock import Mock, patch
 
 
 class LocalRouterTests(unittest.TestCase):
-    def load_router(self, config: Path, log_format: str = "text"):
+    def load_router(
+        self, config: Path | None, log_format: str = "text", hosts: Path | None = None
+    ):
         mitmproxy = types.ModuleType("mitmproxy")
-        mitmproxy.ctx = types.SimpleNamespace(log=Mock())
+        mitmproxy.ctx = types.SimpleNamespace(log=Mock(), options=Mock())
         mitmproxy.http = types.SimpleNamespace(HTTPFlow=object)
         with patch.dict(sys.modules, {"mitmproxy": mitmproxy}):
             with patch.dict(
                 "os.environ",
                 {
-                    "PROXY_LAB_CONFIG": str(config),
+                    **({"PROXY_LAB_CONFIG": str(config)} if config else {}),
+                    **({"PROXY_LAB_HOSTS_FILE": str(hosts)} if hosts else {}),
                     "PROXY_LAB_LOG_FORMAT": log_format,
                 },
+                clear=False,
             ):
+                if config is None:
+                    import os
+
+                    os.environ.pop("PROXY_LAB_CONFIG", None)
                 import local_router
 
                 return importlib.reload(local_router)
@@ -112,6 +120,44 @@ class LocalRouterTests(unittest.TestCase):
                 router.request(flow)
                 router.response(flow)
             self.assertEqual(output.getvalue(), "")
+
+    def test_only_configured_hosts_are_intercepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            router = self.load_router(self.config_file(directory))
+            router.load(None)
+            patterns = router.ctx.options.update.call_args_list[0].kwargs["allow_hosts"]
+            self.assertEqual(patterns, [r"\.example\.com:\d+$"])
+            import re
+
+            self.assertTrue(re.search(patterns[0], "api.example.com:443"))
+            self.assertFalse(re.search(patterns[0], "apple.com:443"))
+
+    def test_hosts_file_is_the_default_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            hosts = Path(directory) / "hosts"
+            hosts.write_text(
+                "127.0.0.1 localhost\n255.255.255.255 broadcasthost\n"
+                "::1 localhost\n127.0.0.1 app-dev.example.test api-dev.example.test # docker\n",
+                encoding="utf-8",
+            )
+            router = self.load_router(None, hosts=hosts)
+            router.load(None)
+            patterns = router.ctx.options.update.call_args_list[0].kwargs["allow_hosts"]
+            self.assertEqual(
+                patterns,
+                [r"^app\-dev\.example\.test:\d+$", r"^api\-dev\.example\.test:\d+$"],
+            )
+            self.assertTrue(router.matches_host("app-dev.example.test", (), router._LOCAL_EXACT_HOSTS))
+            self.assertFalse(router.matches_host("myapp-dev.example.test", (), router._LOCAL_EXACT_HOSTS))
+
+    def test_nothing_to_capture_is_an_error_not_a_silent_open_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            hosts = Path(directory) / "hosts"
+            hosts.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+            router = self.load_router(None, hosts=hosts)
+            with self.assertRaises(RuntimeError):
+                router.load(None)
+            router.ctx.options.update.assert_not_called()
 
 
 if __name__ == "__main__":

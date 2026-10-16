@@ -63,6 +63,7 @@ Stdout is only that object. Failures go to stderr with an exit code below.
 | `doctor [platform] [--json]` | Preflight. `.next` is the command to run when `.ok` is true. |
 | `init android` | Write `network_security_config.xml`; print the manifest attribute. |
 | `trust ios` | Install the CA into the Simulator keychain. |
+| `start ios --system-proxy` | Opt in: capture hosts that `/etc/hosts` points at localhost, which local capture cannot see. Sets a PAC for those hosts only; restored on stop. |
 
 `--json` stdout is **only** the JSON document. Parse the whole stream.
 
@@ -117,7 +118,7 @@ pinned. When none resolves, `doctor ios` fails with `no usable Xcode` and
 
 ## Recovery
 
-`stop` restores the Android proxy recorded before the run. `logs` still works
+`stop` restores the Android proxy recorded before the run. proxy-lab changes macOS network settings only for `start ios --system-proxy`, and `stop`, `reset`, and the next `start` put them back. `doctor` fails with `system proxy` when one was left behind: run `reset ios`. `start` and `reset` also end a `mitmdump` left behind by a killed launcher. `logs` still works
 after stop, because the log lives outside the state directory. If that is not
 enough: `reset`.
 
@@ -126,12 +127,10 @@ enough: `reset`.
 | Variable | Effect |
 | --- | --- |
 | `PROXY_LAB_STATE_DIR` | Isolate parallel runs. |
-| `PROXY_LAB_CONFIG` | Domain list (same as the positional `domains.yml`). |
+| `PROXY_LAB_CONFIG` | Domain list (same as the positional `domains.yml`). Without one, the host names in `/etc/hosts` are captured. Only listed hosts are intercepted. |
 | `PROXY_LAB_SCRIPTS` | Newline-separated addon scripts. |
 | `PROXY_LAB_MITMDUMP` | Specific `mitmdump`, skipping discovery. |
 | `MITMPROXY_SPEC` | uv fallback. Default `mitmproxy==12.2.3`. |
 | `DEVELOPER_DIR` | iOS only. Xcode to drive. Honoured when set, verified to carry `simctl`. |
-| `PROXY_LAB_IOS_MODE` | iOS only. `local` or `proxy`. Default: `proxy` when `/etc/hosts` maps a dev host to localhost (local capture cannot see loopback), else `local`. |
-| `PROXY_LAB_IOS_PORT` | iOS proxy mode only. Default `8080`. |
 | `PORT`, `AVD`, `SERIAL`, `BOOT_TIMEOUT` | Android only. |
  |

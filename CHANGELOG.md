@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-16
+
+### Changed
+
+- `start ios` no longer changes macOS network settings unless you ask. The
+  system-proxy mode that switched on by itself, `PROXY_LAB_IOS_MODE`, and
+  `PROXY_LAB_IOS_PORT` are gone. iOS uses local capture by default, which
+  can't see hosts that `/etc/hosts` points at localhost; `doctor ios` says so.
+- `--system-proxy` (iOS, opt-in) captures those hosts. It sets a proxy
+  auto-config that sends only your hosts to mitmproxy and picks a free port by
+  itself. It is put back on `stop`, `reset`, and the next `start`, and
+  `doctor` fails when a proxy-lab setting was left behind.
+- Only your own hosts are intercepted. They come from the domains file if you
+  pass one, otherwise from the host names in `/etc/hosts`. Everything else
+  passes through untouched: not decrypted, not logged, not modified. `start`
+  stops with a hint when there is nothing to capture. The bundled
+  `domains.yaml` is now an example, not a default.
+
+### Fixed
+
+- `start` and `reset` end a `mitmdump` left behind by a launcher that was
+  killed outright, so iOS traffic is no longer redirected to a proxy nobody
+  reads. Only a process that is still a mitmproxy is touched.
+
 ## [2.3.3] - 2026-10-16
 
 ### Fixed

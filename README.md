@@ -104,7 +104,7 @@ The script checks your tools, reuses a running emulator or boots one, installs t
 
 **3. Start your debug build.** Requests print in the terminal as they happen.
 
-**4. Press `Ctrl-C` or close the terminal.** The proxy stops and restores the Android proxy setting that existed before the run. The emulator keeps running. If the launcher is killed with `SIGKILL` or the machine loses power, use `uvx proxy-lab status android` followed by `uvx proxy-lab stop android` or `uvx proxy-lab reset android`.
+**4. Press `Ctrl-C` or close the terminal.** The proxy stops and restores the Android proxy setting that existed before the run. The emulator keeps running. A second `Ctrl-C` is harmless; cleanup finishes either way. (`start ios --system-proxy` also restores your Mac's proxy setting.) If the launcher is killed with `SIGKILL` or the machine loses power, the next `start` tidies up on its own, including a leftover `mitmdump`. To do it yourself, use `uvx proxy-lab status android` followed by `uvx proxy-lab stop android` or `uvx proxy-lab reset android`.
 
 > Use a **Google APIs** AVD image. "Google APIs Play Store" images refuse `adb root`, and the CA install needs it.
 
@@ -130,7 +130,13 @@ It also attempts to install the mitmproxy CA into the Simulator keychain with `s
 uvx proxy-lab trust ios --udid 11111111-1111-1111-1111-111111111111
 ```
 
-**Local docker stack?** If `/etc/hosts` points your dev hosts at `127.0.0.1`, nothing changes for you. macOS local capture cannot see loopback traffic, so `start ios` notices and captures through the system proxy instead (port 8080, `PROXY_LAB_IOS_PORT` to change), then restores your previous proxy settings on `stop`. Only your configured domains and the `/etc/hosts` loopback hosts go through mitmproxy (via a proxy auto-config file); Outlook, the browser and everything else stay direct. Force a mode with `PROXY_LAB_IOS_MODE=local` or `proxy`. In proxy mode you can skip step 3.
+**Local docker stack?** By default proxy-lab leaves your Mac's network settings alone. macOS local capture can't see traffic to `127.0.0.1`, so requests to hosts that `/etc/hosts` points at localhost won't show up in the log; `doctor ios` tells you when that applies. To capture them, opt in:
+
+```bash
+uvx proxy-lab start ios --system-proxy
+```
+
+This sets a proxy auto-config on your active network service for the length of the session. It sends only your hosts to mitmproxy; everything else stays direct. `stop`, `reset`, and the next `start` put your previous setting back, and `doctor` flags one that was left behind. You can skip step 3 in this mode: it doesn't use the network extension. Android needs none of this; its proxy resolves `/etc/hosts` like any other app.
 
 **3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. macOS installs mitmproxy as a Network Extension the first time local capture starts and asks you to allow it. Allow it, then confirm:
 
@@ -196,11 +202,11 @@ uvx proxy-lab doctor android --json | jq -r '.next'
 uvx proxy-lab init android
 ```
 
-## Choose the domains to log
+## Choose what gets captured
 
-Requests appear in the mitmdump output. Matching hosts also get a `[local_router]` line, which makes your own API easy to find in a busy log.
+proxy-lab intercepts only the hosts you name. Everything else passes through untouched: not decrypted, not logged, not modified. By default those are the host names in your `/etc/hosts`, which is where a local development stack lives. `doctor` shows the count, and `start` stops with a hint if there are none.
 
-Write your list in a YAML file:
+To capture something else, or to share one list with your team, write a YAML file:
 
 ```yaml
 domains:
@@ -208,15 +214,13 @@ domains:
    - "acme.dev"       # literal suffix; use ".acme.dev" for domain boundaries
 ```
 
-Entries are literal suffix matches. A leading dot is safest for subdomains; without one, `acme.dev` also matches names such as `notacme.dev`.
-
-Pass the file as the last argument:
+Entries are literal suffix matches. A leading dot is safest for subdomains; without one, `acme.dev` also matches names such as `notacme.dev`. Pass the file as the last argument; it replaces the `/etc/hosts` default:
 
 ```bash
 uvx proxy-lab start android my-domains.yml
 ```
 
-Without an argument you get the [bundled `domains.yaml`](domains.yaml), which lists `.example.com` only. Keep a custom file with the project if the team should share the same filter. The loader validates the file, requires a `domains` list, and rejects malformed entries before mitmproxy starts.
+The loader validates the file, requires a `domains` list, and rejects malformed entries before mitmproxy starts. [`domains.yaml`](domains.yaml) in this repository is an example. Captured hosts also get a `[local_router]` line, which makes your own API easy to find in a busy log.
 
 ## Addons and examples
 
@@ -353,7 +357,7 @@ Start with `uvx proxy-lab doctor android` (or `ios`). It prints the next command
 - **`xcrun: error: unable to find utility "simctl"`** — the selected developer directory is the Command Line Tools, which ship no simulator toolchain. proxy-lab falls back to an installed Xcode automatically; run `uvx proxy-lab doctor ios` to see which one it resolved, or select one permanently with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. See [Which Xcode](#which-xcode).
 - **`no usable Xcode`** — no candidate could run `simctl`. Install a full Xcode, or point one run at it with `DEVELOPER_DIR=…`.
 - **`✗ extension installed but not approved`** — mitmdump is running but the network extension is not, so nothing is captured at all. This is the one failure mode that looks like a working proxy. Approve it: `open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"`, then re-run. `start ios` refuses to start in this state (exit 5).
-- **Nothing shows up on iOS** — make sure a simulator is running (from Xcode or Device Hub), the network extension was allowed, and the CA is trusted. Do not configure a system proxy.
+- **Nothing shows up on iOS** — make sure a simulator is running (from Xcode or Device Hub), the network extension was allowed, and the CA is trusted. Requests to hosts that `/etc/hosts` points at localhost are not visible to local capture; use `--system-proxy` (see "Local docker stack?" above).
 - **No `[local_router]` lines** — the host is not in the domains file in use. See [Choose the domains to log](#choose-the-domains-to-log).
 
 Still stuck? [Open an issue](https://github.com/kibotu/proxy-lab.sh/issues) with the exact error line.
@@ -370,7 +374,7 @@ iOS Simulator ──▶ macOS local capture ┘
 
 For local debugging, both launchers set `ssl_insecure=true`, which disables upstream certificate verification. Remove that option when testing upstream certificate validation.
 
-`local_router.py` is a [mitmproxy addon](https://docs.mitmproxy.org/stable/addons/overview/) that logs matching hosts. It does not route traffic. Both platforms load it.
+`local_router.py` is a [mitmproxy addon](https://docs.mitmproxy.org/stable/addons/overview/) that limits interception to your hosts and logs them. It does not route traffic. Both platforms load it.
 
 ## Why Android needs this
 
@@ -428,7 +432,7 @@ For a GUI or broader device support, use [HTTP Toolkit](https://httptoolkit.com/
 | [`proxy_lab/cli.py`](proxy_lab/cli.py) | The `proxy-lab` entry point for `uvx`. |
 | [`examples/`](examples/) | Generic mitmproxy addon examples. |
 | [`tests/`](tests/) | Unit and fake-tool integration tests. |
-| [`domains.yaml`](domains.yaml) | Default host list. |
+| [`domains.yaml`](domains.yaml) | Example host list. |
 | [`AGENTS.md`](AGENTS.md) | Operational contract for coding agents. |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Shellcheck, unit tests, package smoke tests, and proxy smoke tests on macOS and Ubuntu. |
 

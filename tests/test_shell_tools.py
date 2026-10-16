@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,21 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_HOSTS_DIR = tempfile.TemporaryDirectory()
+
+
+def setUpModule() -> None:
+    # Tests must not depend on whatever the machine running them has in
+    # /etc/hosts: scope capture to a known file instead.
+    hosts = Path(_HOSTS_DIR.name) / "hosts"
+    hosts.write_text("127.0.0.1 localhost\n127.0.0.1 app-dev.example.test\n", encoding="utf-8")
+    os.environ["PROXY_LAB_HOSTS_FILE"] = str(hosts)
+
+
+def tearDownModule() -> None:
+    os.environ.pop("PROXY_LAB_HOSTS_FILE", None)
+    _HOSTS_DIR.cleanup()
 
 
 class ShellIntegrationTests(unittest.TestCase):
@@ -694,36 +710,337 @@ exit 0
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def ios_capture_mode(self, hosts: str, mode: str = "") -> str:
+    def ios_env(self, root: Path, fake_bin: Path, hosts: str | None = None) -> dict[str, str]:
+        """An isolated iOS environment with a fake mitmdump that stays up."""
+        home = root / "home"
+        home.mkdir(exist_ok=True)
+        fake_bin.mkdir(exist_ok=True)
+        mitmdump = fake_bin / "mitmdump"
+        mitmdump.write_text(
+            """#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo 'Mitmproxy: 12.2.3'; exit 0; fi
+mkdir -p "$HOME/.mitmproxy"
+printf 'fake-certificate\\n' > "$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+printf '%s\\n' "$$" > "$MITMDUMP_PID"
+# Stay a process named mitmdump, as the real one does.
+while :; do sleep 1; done
+""",
+            encoding="utf-8",
+        )
+        mitmdump.chmod(0o755)
+        xcrun = fake_bin / "xcrun"
+        xcrun.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [ \"${1:-}\" = simctl ]; then echo '    iPhone (SIM-1) (Booted)'; fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        xcrun.chmod(0o755)
+        self.approved_extension(fake_bin)
+        # Never let a test reach the real networksetup: by default there are no
+        # network services to read or change.
+        networksetup = fake_bin / "networksetup"
+        networksetup.write_text(
+            "#!/usr/bin/env bash\n"
+            "[ \"${1:-}\" = -listallnetworkservices ] && "
+            "echo 'An asterisk (*) denotes that a network service is disabled.'\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        networksetup.chmod(0o755)
+        hosts_file = root / "hosts"
+        hosts_file.write_text(
+            hosts
+            if hosts is not None
+            else "127.0.0.1 localhost\n127.0.0.1 app-dev.example.test\n",
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "HOME": str(home),
+                "MITMDUMP_PID": str(root / "mitmdump.pid"),
+                "PROXY_LAB_STATE_DIR": str(root / "state"),
+                "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                "PROXY_LAB_HOSTS_FILE": str(hosts_file),
+                "PROXY_LAB_MITMDUMP": str(mitmdump),
+                "PROXY_LAB_PYTHON": sys.executable,
+            }
+        )
+        env.pop("PROXY_LAB_CONFIG", None)
+        return env
+
+    def wait_for(self, condition, timeout: float = 15.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if condition():
+                return True
+            time.sleep(0.1)
+        return False
+
+    @staticmethod
+    def pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def test_start_refuses_when_there_is_nothing_to_capture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            hosts_file = Path(directory) / "hosts"
-            hosts_file.write_text(hosts, encoding="utf-8")
-            env = os.environ.copy()
-            env["PROXY_LAB_HOSTS_FILE"] = str(hosts_file)
-            env["PROXY_LAB_IOS_MODE"] = mode
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin", hosts="127.0.0.1 localhost\n")
+            result = self.run_command(["bash", str(ROOT / "ios" / "start-proxy.sh")], env)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("nothing to capture", result.stderr)
+            self.assertFalse((root / "state" / "ios").exists())
+
+    def test_start_scopes_capture_to_the_hosts_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin")
             result = self.run_command(
-                [
-                    "bash",
-                    "-c",
-                    f'source "{ROOT / "proxy_lab" / "common.sh"}"; ios_capture_mode',
-                ],
-                env,
+                ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--duration", "1"], env
             )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout.strip()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("1 hosts from /etc/hosts", result.stdout)
+            self.assertIn("1 /etc/hosts names point at localhost", result.stdout)
 
-    def test_ios_uses_local_capture_when_nothing_resolves_to_localhost(self) -> None:
-        hosts = "127.0.0.1 localhost\n255.255.255.255 broadcasthost\n::1 localhost\n"
-        self.assertEqual(self.ios_capture_mode(hosts), "local")
+    def test_ctrl_c_stops_mitmdump_and_releases_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin")
+            launcher = subprocess.Popen(
+                ["bash", str(ROOT / "ios" / "start-proxy.sh")],
+                cwd=ROOT, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            try:
+                pid_file = root / "mitmdump.pid"
+                self.assertTrue(self.wait_for(lambda: (root / "state" / "ios" / "ready").exists()))
+                mitmdump = int(pid_file.read_text().strip())
+                launcher.send_signal(signal.SIGINT)
+                launcher.send_signal(signal.SIGINT)  # a nervous second Ctrl-C
+                launcher.wait(timeout=20)
+                self.assertFalse((root / "state" / "ios").exists(), "state left behind")
+                self.assertTrue(self.wait_for(lambda: not self.pid_alive(mitmdump)), "mitmdump left running")
+            finally:
+                if launcher.poll() is None:
+                    launcher.kill()
+                    launcher.wait()
+                if launcher.stdout:
+                    launcher.stdout.close()
 
-    def test_ios_switches_to_the_system_proxy_for_localhost_dev_hosts(self) -> None:
-        hosts = "127.0.0.1 localhost\n127.0.0.1 app-dev.example.test # docker\n"
-        self.assertEqual(self.ios_capture_mode(hosts), "proxy")
+    def test_reset_ends_a_mitmdump_left_by_a_killed_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin")
+            launcher = subprocess.Popen(
+                ["bash", str(ROOT / "ios" / "start-proxy.sh")],
+                cwd=ROOT, env=env, text=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            mitmdump = 0
+            try:
+                self.assertTrue(self.wait_for(lambda: (root / "state" / "ios" / "ready").exists()))
+                mitmdump = int((root / "mitmdump.pid").read_text().strip())
+                launcher.kill()  # SIGKILL: no trap, no cleanup
+                launcher.wait()
+                self.assertTrue(self.pid_alive(mitmdump), "expected an orphan to test with")
+                result = self.run_command(
+                    ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "ios"], env
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.wait_for(lambda: not self.pid_alive(mitmdump)), "orphan survived reset")
+                self.assertFalse((root / "state" / "ios").exists())
+            finally:
+                if mitmdump and self.pid_alive(mitmdump):
+                    os.kill(mitmdump, signal.SIGKILL)
 
-    def test_ios_mode_can_be_forced(self) -> None:
-        hosts = "127.0.0.1 app-dev.example.test\n"
-        self.assertEqual(self.ios_capture_mode(hosts, "local"), "local")
-        self.assertEqual(self.ios_capture_mode("127.0.0.1 localhost\n", "proxy"), "proxy")
+    def test_start_ends_a_mitmdump_left_by_a_killed_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin")
+            launcher = subprocess.Popen(
+                ["bash", str(ROOT / "ios" / "start-proxy.sh")],
+                cwd=ROOT, env=env, text=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            mitmdump = 0
+            try:
+                self.assertTrue(self.wait_for(lambda: (root / "state" / "ios" / "ready").exists()))
+                mitmdump = int((root / "mitmdump.pid").read_text().strip())
+                launcher.kill()
+                launcher.wait()
+                result = self.run_command(
+                    ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--duration", "1"], env
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ended a leftover mitmdump", result.stdout)
+                self.assertFalse(self.pid_alive(mitmdump))
+            finally:
+                if mitmdump and self.pid_alive(mitmdump):
+                    os.kill(mitmdump, signal.SIGKILL)
+
+    ORIGINAL_PAC = "no|http://old.example/proxy.pac"
+
+    def system_proxy_env(self, root: Path) -> dict[str, str]:
+        """iOS environment with a fake networksetup and a mitmdump that listens."""
+        fake_bin = root / "bin"
+        env = self.ios_env(root, fake_bin)
+        (root / "ns").write_text(self.ORIGINAL_PAC + "\n", encoding="utf-8")
+        (fake_bin / "networksetup").write_text(
+            """#!/usr/bin/env bash
+S="$NS_STATE"
+IFS='|' read -r enabled url <"$S"
+case "$1" in
+  -listallnetworkservices) printf '%s\\n' 'An asterisk (*) denotes that a network service is disabled.' 'Wi-Fi' ;;
+  -listnetworkserviceorder) printf '%s\\n' '(1) Wi-Fi' '(Hardware Port: Wi-Fi, Device: en0)' ;;
+  -getautoproxyurl)
+    [ "$enabled" = yes ] && shown=Yes || shown=No
+    printf 'URL: %s\\nEnabled: %s\\n' "${url:-(null)}" "$shown" ;;
+  -setautoproxyurl) printf 'yes|%s\\n' "$3" >"$S" ;;
+  -setautoproxystate) [ "$3" = off ] && printf 'no|%s\\n' "$url" >"$S" ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        (fake_bin / "route").write_text(
+            "#!/usr/bin/env bash\necho '   interface: en0'\n", encoding="utf-8"
+        )
+        (fake_bin / "mitmdump").write_text(
+            """#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo 'Mitmproxy: 12.2.3'; exit 0; fi
+port=''
+while [ "$#" -gt 0 ]; do
+  [ "$1" = --listen-port ] && port="$2"
+  shift
+done
+mkdir -p "$HOME/.mitmproxy"
+printf 'fake-certificate\\n' > "$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+printf '%s\\n' "$$" > "$MITMDUMP_PID"
+# The listener exits with its parent, so a force-killed fake leaves nothing behind.
+"$FAKE_PYTHON" -c 'import os, socket, sys, time
+parent = os.getppid()
+s = socket.socket()
+if sys.argv[1]:
+    s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen()
+while os.getppid() == parent:
+    time.sleep(0.2)' "$port" &
+child=$!
+trap 'kill $child 2>/dev/null' TERM EXIT
+wait $child
+""",
+            encoding="utf-8",
+        )
+        for name in ("networksetup", "route", "mitmdump"):
+            (fake_bin / name).chmod(0o755)
+        env["NS_STATE"] = str(root / "ns")
+        env["FAKE_PYTHON"] = sys.executable
+        return env
+
+    def start_system_proxy(self, root: Path, env: dict[str, str]) -> subprocess.Popen:
+        launcher = subprocess.Popen(
+            ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--system-proxy"],
+            cwd=ROOT, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.assertTrue(
+            self.wait_for(lambda: (root / "state" / "ios" / "ready").exists()),
+            "system-proxy session never became ready",
+        )
+        return launcher
+
+    def test_system_proxy_sets_a_pac_for_your_hosts_and_restores_it(self) -> None:
+        import urllib.request
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.system_proxy_env(root)
+            launcher = self.start_system_proxy(root, env)
+            try:
+                enabled, url = (root / "ns").read_text().strip().split("|", 1)
+                self.assertEqual(enabled, "yes")
+                self.assertRegex(url, r"^http://127\.0\.0\.1:\d+/proxy\.pac$")
+                pac = urllib.request.urlopen(url, timeout=5).read().decode()
+                self.assertIn("app-dev.example.test", pac)
+                self.assertIn('return "DIRECT"', pac)
+                launcher.send_signal(signal.SIGINT)
+                launcher.send_signal(signal.SIGINT)
+                launcher.wait(timeout=20)
+                self.assertEqual((root / "ns").read_text().strip(), self.ORIGINAL_PAC)
+                self.assertFalse((root / "state" / "ios").exists())
+            finally:
+                if launcher.poll() is None:
+                    launcher.kill()
+                    launcher.wait()
+                if launcher.stdout:
+                    launcher.stdout.close()
+
+    def killed_system_proxy_session(self, root: Path, env: dict[str, str]) -> None:
+        launcher = self.start_system_proxy(root, env)
+        launcher.kill()  # SIGKILL: no trap, no cleanup
+        launcher.wait()
+        if launcher.stdout:
+            launcher.stdout.close()
+        self.assertTrue((root / "ns").read_text().startswith("yes|"), "expected a leftover")
+
+    def reap_stragglers(self, root: Path) -> None:
+        pid_file = root / "mitmdump.pid"
+        if pid_file.exists():
+            pid = int(pid_file.read_text().strip())
+            if self.pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
+        pac_pid = root / "state" / "ios" / "pac_pid"
+        if pac_pid.exists():
+            try:
+                os.kill(int(pac_pid.read_text().strip()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def test_doctor_flags_a_leftover_proxy_and_reset_clears_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.system_proxy_env(root)
+            try:
+                self.killed_system_proxy_session(root, env)
+                doctor = self.run_command(
+                    ["bash", str(ROOT / "proxy_lab" / "control.sh"), "doctor", "ios"], env
+                )
+                self.assertIn("system proxy", doctor.stdout)
+                self.assertIn("proxy-lab reset ios", doctor.stdout)
+                reset = self.run_command(
+                    ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "ios"], env
+                )
+                self.assertEqual(reset.returncode, 0, reset.stderr)
+                self.assertEqual((root / "ns").read_text().strip(), self.ORIGINAL_PAC)
+            finally:
+                self.reap_stragglers(root)
+
+    def test_next_start_puts_a_leftover_proxy_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.system_proxy_env(root)
+            try:
+                self.killed_system_proxy_session(root, env)
+                result = self.run_command(
+                    ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--duration", "1"], env
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((root / "ns").read_text().strip(), self.ORIGINAL_PAC)
+            finally:
+                self.reap_stragglers(root)
+
+    def test_system_proxy_is_ios_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin")
+            result = self.run_command(
+                ["bash", str(ROOT / "android" / "start-proxy.sh"), "--system-proxy"], env
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("only valid for iOS", result.stderr)
 
     def test_ios_launcher_survives_a_mitmdump_that_exits_immediately(self) -> None:
         # CI's smoke fake writes its argv and returns at once. Anything that
@@ -770,7 +1087,6 @@ exit 0
                     "MITMDUMP_ARGS": str(args_file),
                     "PROXY_LAB_STATE_DIR": str(root / "state"),
                     "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
-                    "PROXY_LAB_IOS_MODE": "local",
                     "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
                     "PROXY_LAB_PYTHON": sys.executable,
                 }
@@ -827,7 +1143,6 @@ exit 0
                     "HOME": str(home),
                     "PROXY_LAB_STATE_DIR": str(root / "state"),
                     "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
-                    "PROXY_LAB_IOS_MODE": "local",
                     "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
                     "PROXY_LAB_PYTHON": sys.executable,
                 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -121,11 +122,59 @@ def load_domains(path: str | Path) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-def matches_host(host: str, suffixes: tuple[str, ...]) -> bool:
-    """Return whether *host* matches one of the configured literal suffixes."""
+def matches_host(
+    host: str, suffixes: tuple[str, ...], exact: tuple[str, ...] = ()
+) -> bool:
+    """Return whether *host* is one of *exact* or ends with one of *suffixes*."""
 
     normalized_host = normalize_host(host)
-    return any(normalized_host.endswith(suffix) for suffix in suffixes)
+    return normalized_host in exact or any(
+        normalized_host.endswith(suffix) for suffix in suffixes
+    )
+
+
+# Names /etc/hosts carries on every Mac that are not anyone's dev host.
+_STOCK_HOST_NAMES = frozenset({"localhost", "broadcasthost"})
+
+
+def hosts_file_names(path: str | Path = "/etc/hosts") -> tuple[str, ...]:
+    """Return the host names a hosts file defines, minus the stock entries.
+
+    These are the names a developer pointed somewhere on purpose, which makes
+    them the right default for what proxy-lab should capture. An unreadable
+    file yields no names.
+    """
+
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()
+    names: dict[str, None] = {}
+    for line in text.splitlines():
+        fields = line.split("#", 1)[0].split()
+        for name in fields[1:]:
+            normalized = normalize_host(name)
+            if (
+                normalized
+                and normalized not in _STOCK_HOST_NAMES
+                and not normalized.startswith("ip6-")
+            ):
+                names[normalized] = None
+    return tuple(names)
+
+
+def allow_host_patterns(
+    suffixes: tuple[str, ...], exact: tuple[str, ...] = ()
+) -> list[str]:
+    """Return mitmproxy ``allow_hosts`` regexes equivalent to :func:`matches_host`.
+
+    mitmproxy matches these against ``host:port``. Anything that matches none
+    of them is passed through untouched instead of being intercepted.
+    """
+
+    patterns = [re.escape(suffix) + r":\d+$" for suffix in suffixes]
+    patterns += ["^" + re.escape(name) + r":\d+$" for name in exact]
+    return patterns
 
 
 def _is_sensitive_query_key(name: str) -> bool:

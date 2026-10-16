@@ -24,13 +24,15 @@ fi
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
 ROUTER="$PROJECT_DIR/local_router.py"
 # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
-CONFIG="${PROXY_LAB_CONFIG:-$PROJECT_DIR/domains.yaml}"
+# Optional. Without a domains file, the hosts in /etc/hosts are what gets captured.
+CONFIG="${PROXY_LAB_CONFIG:-}"
 PORT="${PORT:-8080}"
 AVD="${AVD:-}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-240}"
 SERIAL="${SERIAL:-${ANDROID_SERIAL:-}}"
 UDID="${UDID:-}"
 TRUST_ONLY=0
+SYSTEM_PROXY=0
 CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 USER_CA_DIR="/data/misc/user/0/cacerts-added"
 EMULATOR_LOG=""
@@ -49,6 +51,7 @@ validate_common_files
 DEVICE_PROXY="10.0.2.2:${PORT}"
 [ -z "$UDID" ] || fail 'arguments' '--udid is only valid for iOS'
 [ "$TRUST_ONLY" -eq 0 ] || fail 'arguments' '--trust-only is only valid for iOS'
+[ "$SYSTEM_PROXY" -eq 0 ] || fail 'arguments' '--system-proxy is only valid for iOS'
 run_detach_handoff "$SCRIPT_DIR/start-proxy.sh" "$@"
 require_config_file
 use_android_sdk

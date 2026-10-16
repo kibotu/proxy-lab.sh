@@ -15,32 +15,53 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 from proxy_lab.config import (  # noqa: E402
     ConfigError,
+    allow_host_patterns,
+    hosts_file_names,
     load_domains,
     matches_host,
     redact_headers,
     redact_url,
 )
 
-CONFIG = Path(
-    os.environ.get("PROXY_LAB_CONFIG")
-    or Path(__file__).with_name("domains.yaml")
-).expanduser()
+# A domains file is optional. Without one, the hosts you set up in /etc/hosts
+# are the hosts to capture: that is where a local dev stack lives.
+_CONFIG_ENV = os.environ.get("PROXY_LAB_CONFIG")
+CONFIG = Path(_CONFIG_ENV).expanduser() if _CONFIG_ENV else None
+HOSTS_FILE = os.environ.get("PROXY_LAB_HOSTS_FILE") or "/etc/hosts"
 LOG_FORMAT = os.environ.get("PROXY_LAB_LOG_FORMAT") or "text"
 _LOCAL_DOMAIN_SUFFIXES: tuple[str, ...] = ()
+_LOCAL_EXACT_HOSTS: tuple[str, ...] = ()
 
 
 def load(loader) -> None:
-    """Load and validate the domain configuration when mitmproxy starts."""
+    """Pick the hosts to capture and keep mitmproxy's hands off everything else."""
 
     del loader  # mitmproxy supplies this hook argument; the addon has no options.
-    global _LOCAL_DOMAIN_SUFFIXES
+    global _LOCAL_DOMAIN_SUFFIXES, _LOCAL_EXACT_HOSTS
     try:
-        _LOCAL_DOMAIN_SUFFIXES = load_domains(CONFIG)
+        if CONFIG is not None:
+            _LOCAL_DOMAIN_SUFFIXES = load_domains(CONFIG)
+            _LOCAL_EXACT_HOSTS = ()
+            source = str(CONFIG)
+        else:
+            _LOCAL_DOMAIN_SUFFIXES = ()
+            _LOCAL_EXACT_HOSTS = hosts_file_names(HOSTS_FILE)
+            source = HOSTS_FILE
     except ConfigError as exc:
         ctx.log.error(f"proxy-lab configuration error: {exc}")
         raise RuntimeError(str(exc)) from exc
+    count = len(_LOCAL_DOMAIN_SUFFIXES) + len(_LOCAL_EXACT_HOSTS)
+    if count == 0:
+        message = f"no hosts to capture in {source}"
+        ctx.log.error(f"proxy-lab: {message}")
+        raise RuntimeError(message)
+    # Everything outside the list is passed through as-is: not decrypted, not
+    # logged, not modified. Only your development hosts are intercepted.
+    ctx.options.update(
+        allow_hosts=allow_host_patterns(_LOCAL_DOMAIN_SUFFIXES, _LOCAL_EXACT_HOSTS)
+    )
     ctx.log.info(
-        f"proxy-lab domain filter: {len(_LOCAL_DOMAIN_SUFFIXES)} suffix(es) "
+        f"proxy-lab capturing {count} host(s) from {source} "
         f"[log-format: {LOG_FORMAT}]"
     )
 
@@ -123,7 +144,7 @@ def _jsonl_record(flow: http.HTTPFlow) -> dict[str, object]:
 
 def request(flow: http.HTTPFlow) -> None:
     host = flow.request.pretty_host
-    if not matches_host(host, _LOCAL_DOMAIN_SUFFIXES):
+    if not matches_host(host, _LOCAL_DOMAIN_SUFFIXES, _LOCAL_EXACT_HOSTS):
         return
 
     if LOG_FORMAT == "jsonl":
@@ -145,6 +166,8 @@ def response(flow: http.HTTPFlow) -> None:
 
     if LOG_FORMAT != "jsonl":
         return
-    if not matches_host(flow.request.pretty_host, _LOCAL_DOMAIN_SUFFIXES):
+    if not matches_host(
+        flow.request.pretty_host, _LOCAL_DOMAIN_SUFFIXES, _LOCAL_EXACT_HOSTS
+    ):
         return
     print(json.dumps(_jsonl_record(flow)), flush=True)

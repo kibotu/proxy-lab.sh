@@ -1,4 +1,4 @@
-"""Proxy auto-config for iOS proxy mode: only dev hosts reach mitmproxy."""
+"""Proxy auto-config for `start ios --system-proxy`: only your hosts reach mitmproxy."""
 
 from __future__ import annotations
 
@@ -36,11 +36,18 @@ def build_pac(suffixes: tuple[str, ...], hosts: list[str], proxy: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """`python -m proxy_lab.pac CONFIG PROXY` with extra hosts on stdin."""
+    """`python -m proxy_lab.pac PROXY [CONFIG]`.
 
-    config, proxy = argv
-    hosts = [line.strip() for line in sys.stdin if line.strip()]
-    sys.stdout.write(build_pac(load_domains(config), hosts, proxy))
+    With a domains file, its suffixes are the hosts. Without one, the host
+    names arrive on stdin, one per line (the names in /etc/hosts).
+    """
+
+    proxy = argv[0]
+    if len(argv) > 1:
+        sys.stdout.write(build_pac(load_domains(argv[1]), [], proxy))
+    else:
+        hosts = [line.strip() for line in sys.stdin if line.strip()]
+        sys.stdout.write(build_pac((), hosts, proxy))
     return 0
 
 

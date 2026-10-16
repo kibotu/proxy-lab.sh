@@ -96,6 +96,16 @@ def _add_device_options(parser: argparse.ArgumentParser, platform: str | None = 
             "--udid",
             help="iOS Simulator UDID to select for discovery/CA trust",
         )
+        if parser.prog.endswith("ios"):
+            parser.add_argument(
+                "--system-proxy",
+                action="store_true",
+                help=(
+                    "capture hosts that /etc/hosts points at localhost, which local "
+                    "capture cannot see; sets a macOS proxy auto-config for your "
+                    "hosts only and restores it on stop"
+                ),
+            )
 
 
 def _add_control_options(parser: argparse.ArgumentParser) -> None:
@@ -130,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
             "config",
             nargs="?",
             metavar="domains.yml",
-            help="domain list to log (default: the bundled domains.yaml)",
+            help="hosts to capture (default: the host names in /etc/hosts)",
         )
         platform_parser.add_argument(
             "--config",
@@ -315,6 +325,8 @@ def _start_command(args: argparse.Namespace, script: Path) -> list[str]:
         command.extend(("--boot-timeout", str(args.boot_timeout)))
     if getattr(args, "udid", None) is not None:
         command.extend(("--udid", args.udid))
+    if getattr(args, "system_proxy", False):
+        command.append("--system-proxy")
     if getattr(args, "json_output", False):
         command.append("--json")
     for path in getattr(args, "scripts", []) or []:
