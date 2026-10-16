@@ -340,3 +340,5 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/python,windows,macos,jetbrains+all,visualstudiocode
+# Written by hatch-vcs on every build.
+proxy_lab/_version.py

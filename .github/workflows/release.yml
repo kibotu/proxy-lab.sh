@@ -1,7 +1,8 @@
 name: Release
 
 # Tag push drives the release: tag 1.0.0 (no v prefix) → GitHub Release.
-# The checked-in package version is the source of truth and must match the tag.
+# The tag is the source of truth: hatch-vcs derives the package version from
+# it, and the built artifact is checked against the tag before publishing.
 on:
   push:
     tags:
@@ -22,24 +23,39 @@ jobs:
     environment: pypi
     steps:
       - uses: actions/checkout@v7
+        with:
+          # hatch-vcs derives the version from the tag. actions/checkout
+          # fetches --no-tags by default, which builds 0.1.dev1 and fails the
+          # check below.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.2.0
       - name: Verify dependency lock
         run: uv lock --check
-      - name: Verify tag matches project version
+      - name: Build
+        run: uv build
+      - name: Verify the tag matches the built version
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          project_version="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' pyproject.toml)"
-          test "$TAG" = "$project_version" || {
-            echo "tag $TAG does not match pyproject.toml version $project_version" >&2
+          set -euo pipefail
+          built_version="$(python3 - <<'PY'
+          import glob, re, zipfile
+
+          wheel, = glob.glob("dist/*.whl")
+          with zipfile.ZipFile(wheel) as archive:
+              metadata, = (n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
+              text = archive.read(metadata).decode("utf-8")
+          print(re.search(r"^Version: (.+)$", text, re.MULTILINE).group(1))
+          PY
+          )"
+          test "$TAG" = "$built_version" || {
+            echo "tag $TAG does not match built version $built_version" >&2
             exit 1
           }
           grep -Fq "## [$TAG]" CHANGELOG.md || {
             echo "CHANGELOG.md has no released section for $TAG" >&2
             exit 1
           }
-      - name: Build
-        run: uv build
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

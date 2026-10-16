@@ -416,7 +416,7 @@ For a GUI or broader device support, use [HTTP Toolkit](https://httptoolkit.com/
 ## Versions and releases
 
 - **mitmproxy** uses the host `mitmdump` when available. Otherwise the scripts request pinned `mitmproxy==12.2.3` through uv. `doctor` logs the resolved version and, when `curl` is available, mentions a newer PyPI release. Override with `MITMPROXY_SPEC`.
-- **proxy-lab.sh** keeps the package version in `pyproject.toml`; `proxy-lab --version` reads installed package metadata. The release workflow refuses to publish a tag that disagrees with that version.
+- **proxy-lab.sh** takes its version from the git tag via [hatch-vcs](https://github.com/ofek/hatch-vcs); nothing in the tree hardcodes it. `proxy-lab --version` reads installed package metadata. The release workflow builds first and refuses to publish unless the tag matches the version in the artifact.
 - Tags are `X.Y.Z`, with no `v` prefix. A matching tag builds the wheel and sdist and publishes both a [GitHub Release](https://github.com/kibotu/proxy-lab.sh/releases) and the same artifacts to [PyPI](https://pypi.org/project/proxy-lab/). [CHANGELOG.md](CHANGELOG.md) has the per-version detail.
 
 ## Project layout
@@ -447,7 +447,7 @@ uv run python -m unittest discover -s tests -v
 shellcheck android/start-proxy.sh ios/start-proxy.sh proxy_lab/common.sh proxy_lab/control.sh
 ```
 
-Add notable changes to [CHANGELOG.md](CHANGELOG.md) under `Unreleased`. Release tags must match the version in `pyproject.toml`.
+Add notable changes to [CHANGELOG.md](CHANGELOG.md) under `Unreleased`. To release, tag the release commit `X.Y.Z` and push the tag; the version is derived from it, so there is nothing to bump in `pyproject.toml`. A commit after the tag builds as `X.Y.(Z+1).devN`, which the workflow will refuse to publish under the old tag.
 
 ## License
 

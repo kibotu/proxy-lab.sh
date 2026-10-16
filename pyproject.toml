@@ -1,10 +1,12 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "proxy-lab"
-version = "2.4.2"
+# The version is the git tag. Nothing in the tree hardcodes it, so a tag and
+# a published package cannot disagree. See [tool.hatch.version].
+dynamic = ["version"]
 description = "One command to see your app's HTTPS traffic: a mitmproxy setup for the Android emulator and the iOS simulator."
 readme = "README.md"
 license = "Apache-2.0"
@@ -16,6 +18,22 @@ dependencies = ["ruamel.yaml>=0.18.6"]
 
 [project.scripts]
 proxy-lab = "proxy_lab.cli:main"
+
+# Tags are the single source of truth: 2.4.2 → version 2.4.2. A commit after a
+# tag becomes 2.4.3.devN, which is exactly what PyPI should never receive.
+[tool.hatch.version]
+source = "vcs"
+# Only reached when there is no git metadata at all, such as an unpacked
+# sdist. A checkout that has git but no tags derives 0.1.dev1 instead, which
+# is why CI fetches tags (fetch-depth: 0) and the release workflow compares
+# the tag against the built wheel before publishing.
+fallback-version = "0.0.0"
+raw-options = { local_scheme = "no-local-version" }
+
+# Written during every build, including editable ones, so a source checkout
+# can report its version without being installed. Not tracked; see .gitignore.
+[tool.hatch.build.hooks.vcs]
+version-file = "proxy_lab/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["proxy_lab"]

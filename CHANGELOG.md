@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The package version now comes from the git tag via hatch-vcs. Nothing in the
+  tree hardcodes it, so a tag and the published artifact cannot drift apart.
+  Releasing is now just tagging the release commit `X.Y.Z`; there is no version
+  to bump in `pyproject.toml`. `uv.lock` records the root as `(dynamic)`, so it
+  no longer changes on every commit.
+
 ## [2.4.0] - 2026-10-16
 
 ### Changed

@@ -1,22 +1,37 @@
 from __future__ import annotations
 
-import re
+import subprocess
 import unittest
 from pathlib import Path
 
 from proxy_lab import __version__
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class MetadataTests(unittest.TestCase):
-    def test_checked_in_version_matches_package_version(self) -> None:
-        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        match = re.search(
-            r'^version\s*=\s*"([^"]+)"',
-            pyproject.read_text(encoding="utf-8"),
-            re.MULTILINE,
+    def test_version_is_resolved(self) -> None:
+        # "unknown" means neither installed metadata nor the hatch-vcs version
+        # file was found, and --version would print nothing useful.
+        self.assertNotEqual(__version__, "unknown")
+
+    def test_version_matches_the_tag(self) -> None:
+        # Only meaningful on a clean release commit, which is where a wrong
+        # version would actually ship. A dirty tree is deliberately a dev
+        # version, so it is not this test's business.
+        described = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match", "--dirty"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        self.assertIsNotNone(match)
-        self.assertEqual(__version__, match.group(1))
+        tag = described.stdout.strip()
+        if described.returncode != 0:
+            self.skipTest("HEAD is not an exact tag")
+        if tag.endswith("-dirty"):
+            self.skipTest(f"working tree is dirty, {tag}")
+        self.assertEqual(__version__, tag)
 
 
 if __name__ == "__main__":
