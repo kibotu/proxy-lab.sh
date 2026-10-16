@@ -142,9 +142,10 @@ No root or reboot is required. HTTPS interception still requires the simulator t
 
 proxy-lab needs `simctl`, which ships with Xcode and **not** with the standalone Command Line Tools. `xcode-select -p` can legally point at the Command Line Tools, and on a fresh machine it usually does — which leaves `xcrun simctl` unable to run even though `xcrun` itself is on `PATH`. No version is ever pinned. proxy-lab resolves the toolchain per run:
 
-1. `DEVELOPER_DIR`, when you set it. Verified to carry `simctl`; if it does not, that is an error rather than a silent substitution.
-2. The `xcode-select -p` selection, when that directory can actually run `simctl`.
-3. Otherwise, the newest Xcode under `/Applications` or `~/Applications` that can. When several are installed, one that can see a booted simulator wins over a merely newer one.
+1. **Whatever is selected right now**, if `xcrun simctl list devices booted` succeeds under it. That covers an explicit `DEVELOPER_DIR`, a healthy `xcode-select` selection, and a pre-configured or shimmed `simctl`, all of which are left exactly as they are.
+2. **Otherwise**, the newest Xcode under `/Applications` or `~/Applications` that can run `simctl`. When several are installed, one that can see a booted simulator wins over a merely newer one, since a device booted by an older Xcode is invisible to the newer toolchain.
+
+A `DEVELOPER_DIR` you set yourself is honoured or reported broken; proxy-lab never silently substitutes a different Xcode for one you asked for.
 
 The choice is exported to the run's own process tree. Your machine-wide `xcode-select` setting is never changed, and nothing needs `sudo`. To make a different Xcode the machine default:
 
@@ -158,7 +159,7 @@ Or point one run at it:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer uvx proxy-lab start ios
 ```
 
-`doctor` reports the resolved path under `Xcode:` and fails with `no usable Xcode` when none of the three can be resolved.
+`doctor` reports the resolved path under `Xcode:` and fails with `no usable Xcode` when `simctl` cannot be made to run at all.
 
 ## Automation
 

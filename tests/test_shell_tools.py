@@ -88,6 +88,115 @@ fi
                 xcrun_log.read_text(encoding="utf-8"),
             )
 
+    def test_ios_resolves_an_installed_xcode_when_simctl_does_not_answer(self) -> None:
+        # xcode-select points at Command Line Tools: xcrun is on PATH but every
+        # simctl call fails. The run must fall back to an installed Xcode.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            home = root / "home"
+            fake_bin.mkdir()
+            home.mkdir()
+            developer = home / "Applications" / "Xcode-99.0.app" / "Contents" / "Developer"
+            developer.mkdir(parents=True)
+            xcrun_log = root / "xcrun.log"
+            (fake_bin / "xcrun").write_text(
+                """#!/usr/bin/env bash
+printf '%s|%s\\n' \"${DEVELOPER_DIR:-}\" \"$*\" >> \"$XCRUN_LOG\"
+if [ \"${DEVELOPER_DIR:-}\" = \"$EXPECTED_DEVELOPER_DIR\" ]; then
+  printf '%s\\n' '== Devices ==' '    iPhone (SIM-UDID) (Booted)'
+  exit 0
+fi
+exit 1
+""",
+                encoding="utf-8",
+            )
+            (fake_bin / "xcrun").chmod(0o755)
+            xcrun_log.write_text("", encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "HOME": str(home),
+                    "XCRUN_LOG": str(xcrun_log),
+                    "EXPECTED_DEVELOPER_DIR": str(developer),
+                    "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_PYTHON": "python3",
+                }
+            )
+            env.pop("DEVELOPER_DIR", None)
+            result = self.run_command(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{ROOT}/proxy_lab/common.sh"; ios_developer_dir',
+                ],
+                env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, str(developer))
+            # One ambient probe that fails, then the candidate is tried and its
+            # device list read. Every call after the first is against the Xcode.
+            self.assertEqual(
+                xcrun_log.read_text(encoding="utf-8").splitlines(),
+                [
+                    "|simctl list devices booted",
+                    f"{developer}|simctl list devices booted",
+                    f"{developer}|simctl list devices booted",
+                ],
+            )
+
+    def test_ios_keeps_a_working_simctl_and_overrides_nothing(self) -> None:
+        # An environment whose simctl already works is left exactly as it is:
+        # no scan, no export, nothing to fix.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            home = root / "home"
+            fake_bin.mkdir()
+            home.mkdir()
+            xcrun_log = root / "xcrun.log"
+            (fake_bin / "xcrun").write_text(
+                """#!/usr/bin/env bash
+printf '%s|%s\\n' \"${DEVELOPER_DIR:-}\" \"$*\" >> \"$XCRUN_LOG\"
+printf '%s\\n' '== Devices ==' '    iPhone (SIM-UDID) (Booted)'
+""",
+                encoding="utf-8",
+            )
+            (fake_bin / "xcrun").chmod(0o755)
+            xcrun_log.write_text("", encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "HOME": str(home),
+                    "XCRUN_LOG": str(xcrun_log),
+                    "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_PYTHON": "python3",
+                }
+            )
+            env.pop("DEVELOPER_DIR", None)
+            result = self.run_command(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{ROOT}/proxy_lab/common.sh"; ios_developer_dir',
+                ],
+                env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            # Exactly one probe, against the ambient selection. Nothing was
+            # scanned, exported, or substituted.
+            self.assertEqual(
+                xcrun_log.read_text(encoding="utf-8").splitlines(),
+                ["|simctl list devices booted"],
+            )
+
     def test_android_start_restores_proxy_and_removes_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

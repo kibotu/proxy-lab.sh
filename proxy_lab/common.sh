@@ -200,61 +200,62 @@ use_android_sdk() {
   export PATH
 }
 
-# Can simctl run under this developer dir? Command Line Tools are a valid
-# xcode-select target and contain no simctl, so "xcode-select works" is not
-# the question. Ask whether the simulator toolchain actually answers.
+# Can simctl run under this developer dir? Command Line Tools are a legal
+# xcode-select target and contain no simctl, so `xcrun` being on PATH says
+# nothing. Ask the command the tool actually runs, and read the exit status
+# rather than the output: a working simctl with nothing booted still succeeds,
+# which is exactly what separates a missing toolchain from an idle device list.
+# With no argument, test whatever is selected right now.
 simctl_works() {
-  DEVELOPER_DIR="$1" xcrun simctl list devicetypes >/dev/null 2>&1
+  if [ -n "${1:-}" ]; then
+    DEVELOPER_DIR="$1" xcrun simctl list devices booted >/dev/null 2>&1
+  else
+    xcrun simctl list devices booted >/dev/null 2>&1
+  fi
 }
 
-# Which Xcode to drive. Never pin a version: an explicit DEVELOPER_DIR wins,
-# then the xcode-select selection, then the newest installed Xcode that can
-# run simctl. Command Line Tools are a legal xcode-select target and carry no
-# simctl, so a selection that cannot answer is skipped rather than trusted.
-# Exported for the rest of the process tree only; the machine-wide selection
-# is the user's to change.
+# Which Xcode to drive. Never pins a version, and never overrides a working
+# environment: whatever is selected right now wins if simctl answers under it,
+# so a shimmed or pre-configured simctl keeps working untouched. Only when it
+# does not answer — typically xcode-select pointing at Command Line Tools — is
+# an installed Xcode sought. The result is exported to this run's own process
+# tree; the machine-wide selection belongs to the user. Returns the resolved
+# path when one was chosen and exported, and empty when the ambient selection
+# was kept as-is.
 ios_developer_dir() {
   if [ -n "$IOS_DEVELOPER_DIR" ]; then
     printf '%s' "$IOS_DEVELOPER_DIR"
     return 0
   fi
 
-  local selected listing candidate fallback=""
+  local listing candidate devices fallback=""
 
-  # An explicit DEVELOPER_DIR is a decision, not a default: honour it or report
-  # it broken, rather than quietly driving a different Xcode than the one asked
-  # for. A Command Line Tools selection, by contrast, is machine state that
-  # predates the run, so it falls through to a real Xcode below.
-  if [ -n "${DEVELOPER_DIR:-}" ]; then
-    simctl_works "$DEVELOPER_DIR" || return 1
-    IOS_DEVELOPER_DIR="$DEVELOPER_DIR"
-  else
-    selected="$(xcode-select -p 2>/dev/null || true)"
-    if [ -n "$selected" ] && simctl_works "$selected"; then
-      IOS_DEVELOPER_DIR="$selected"
-    fi
+  if simctl_works; then
+    return 0
   fi
 
-  if [ -z "$IOS_DEVELOPER_DIR" ]; then
-    listing="$(find /Applications "$HOME/Applications" -maxdepth 1 -name 'Xcode*.app' 2>/dev/null |
-      sort -Vr || true)"
-    while IFS= read -r candidate; do
-      [ -n "$candidate" ] || continue
-      candidate="$candidate/Contents/Developer"
-      simctl_works "$candidate" || continue
-      [ -n "$fallback" ] || fallback="$candidate"
-      # A device booted by an older Xcode is invisible to the newer one, so a
-      # candidate that can see a booted device outranks a merely newer one.
-      if DEVELOPER_DIR="$candidate" xcrun simctl list devices booted 2>/dev/null |
-        grep -q '(Booted)'; then
-        IOS_DEVELOPER_DIR="$candidate"
-        break
-      fi
-    done <<EOF
+  # An explicit DEVELOPER_DIR is a decision, not a default. A broken one is an
+  # error rather than an invitation to quietly drive a different Xcode.
+  [ -z "${DEVELOPER_DIR:-}" ] || return 1
+
+  listing="$(find /Applications "$HOME/Applications" -maxdepth 1 -name 'Xcode*.app' 2>/dev/null |
+    sort -Vr || true)"
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    candidate="$candidate/Contents/Developer"
+    simctl_works "$candidate" || continue
+    devices="$(DEVELOPER_DIR="$candidate" xcrun simctl list devices booted 2>/dev/null || true)"
+    [ -n "$fallback" ] || fallback="$candidate"
+    # A device booted by an older Xcode is invisible to the newer toolchain, so
+    # a candidate that can see one outranks a merely newer candidate.
+    if printf '%s' "$devices" | grep -q '(Booted)'; then
+      IOS_DEVELOPER_DIR="$candidate"
+      break
+    fi
+  done <<EOF
 $listing
 EOF
-    IOS_DEVELOPER_DIR="${IOS_DEVELOPER_DIR:-$fallback}"
-  fi
+  IOS_DEVELOPER_DIR="${IOS_DEVELOPER_DIR:-$fallback}"
 
   [ -n "$IOS_DEVELOPER_DIR" ] || return 1
   export DEVELOPER_DIR="$IOS_DEVELOPER_DIR"

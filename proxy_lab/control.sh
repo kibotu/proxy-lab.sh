@@ -417,10 +417,10 @@ run_doctor() {
       # Call, do not capture: ios_developer_dir exports DEVELOPER_DIR into the
       # current shell, and a command substitution would throw that away.
       if ios_developer_dir >/dev/null 2>&1; then
-        developer_dir="$IOS_DEVELOPER_DIR"
+        developer_dir="${IOS_DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
         booted="$(xcrun simctl list devices booted 2>/dev/null || true)"
         if [ "$JSON_OUTPUT" -ne 1 ]; then
-          printf '%s\n' "  Xcode: $developer_dir"
+          [ -n "$developer_dir" ] && printf '%s\n' "  Xcode: $developer_dir"
           printf '%s\n' '  booted simulators:'
           printf '%s\n' "$booted" | sed 's/^/    /'
         fi

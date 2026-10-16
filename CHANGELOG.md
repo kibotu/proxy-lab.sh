@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-10-16
+
+### Fixed
+
+- 2.2.0 broke `start ios` wherever `simctl` works without a discoverable
+  `Xcode.app` — the test suite and the CI smoke job both caught it. The
+  resolver required a *discovered* developer directory and treated "no
+  `/Applications/Xcode*.app` found" as fatal, instead of first asking whether
+  `xcrun simctl` already answers in the current environment. That is the
+  common case for a shimmed or pre-configured `simctl`, and it is the case
+  CI runs on Linux.
+- Resolution now works from the command the tool actually runs
+  (`xcrun simctl list devices booted`, exit status as the signal), rather than
+  a separate `simctl list devicetypes` probe that any shim had to implement
+  too. A working ambient selection is kept as-is: nothing scanned, nothing
+  exported, nothing substituted.
+
+### Added
+
+- Two tests covering the resolution: a `simctl` that fails resolves to an
+  installed Xcode under `$HOME/Applications`, and a working one is left exactly
+  as it is.
+
 ## [2.2.0] - 2026-10-16
 
 ### Fixed
@@ -31,14 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `DEVELOPER_DIR` for iOS runs: the Xcode to drive, verified to carry `simctl`.
-- Resolution order for the iOS toolchain, with no version pinned anywhere: an
-  explicit `DEVELOPER_DIR`, then the `xcode-select -p` selection if that
-  directory can run `simctl`, then the newest installed Xcode that can. With
-  several Xcodes installed, one that can see a booted simulator wins over a
-  merely newer one, since a device booted by an older Xcode is invisible to the
-  newer toolchain. The result is exported to the run's own process tree only;
-  the machine-wide `xcode-select` setting is never modified, and no step needs
-  `sudo`.
+- A per-run resolution for the iOS toolchain, with no version pinned anywhere.
+  Whatever is selected right now wins if `simctl` answers under it, so an
+  explicit `DEVELOPER_DIR`, a healthy `xcode-select`, and a pre-configured
+  `simctl` are all left untouched. Only when it does not answer — typically
+  `xcode-select` pointing at Command Line Tools — is an installed Xcode sought:
+  the newest that can run `simctl`, preferring one that can see a booted
+  simulator, since a device booted by an older Xcode is invisible to the newer
+  toolchain. The result is exported to the run's own process tree only; the
+  machine-wide `xcode-select` setting is never modified, and no step needs
+  `sudo`. See 2.2.1 for a correction to this resolution.
 
 ## [2.1.0] - 2026-09-29
 
