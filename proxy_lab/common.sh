@@ -296,14 +296,75 @@ ios_proxy_apply() {
   fi
 }
 
+# "yes|url" for the automatic proxy configuration (PAC) of a service.
+ios_autoproxy_read() {
+  local service="$1" out enabled url
+  out="$(networksetup -getautoproxyurl "$service" 2>/dev/null)" || return 1
+  url="$(printf '%s\n' "$out" | awk -F': ' '$1 == "URL" { print $2 }')"
+  enabled="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Enabled" { print tolower($2) }')"
+  [ "$url" = "(null)" ] && url=""
+  printf '%s|%s' "$enabled" "$url"
+}
+
+ios_autoproxy_apply() {
+  local service="$1" record="$2" enabled url
+  IFS='|' read -r enabled url <<<"$record"
+  if [ "$enabled" = "yes" ] && [ -n "$url" ]; then
+    networksetup -setautoproxyurl "$service" "$url" >/dev/null 2>&1 || return 1
+  else
+    if [ -n "$url" ]; then
+      networksetup -setautoproxyurl "$service" "$url" >/dev/null 2>&1 || return 1
+    fi
+    networksetup -setautoproxystate "$service" off >/dev/null 2>&1 || return 1
+  fi
+}
+
+# Write the PAC that routes only dev hosts (config domains plus loopback hosts
+# from /etc/hosts) through the proxy, and serve it on loopback. Prints the URL.
+# The server pid is recorded so stop and reset can end it.
+ios_pac_serve() {
+  local proxy="$1" pac_dir="$STATE_DIR/pac" python_bin="${PROXY_LAB_PYTHON:-}" port server_pid
+  [ -n "$python_bin" ] || python_bin="$(command -v python3 || true)"
+  [ -n "$python_bin" ] || return 1
+  mkdir -p "$pac_dir"
+  loopback_hosts | "$python_bin" -m proxy_lab.pac "$CONFIG" "$proxy" >"$pac_dir/proxy.pac" || return 1
+  port="$("$python_bin" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')" || return 1
+  "$python_bin" -m http.server "$port" --bind 127.0.0.1 --directory "$pac_dir" >/dev/null 2>&1 &
+  server_pid=$!
+  state_write pac_pid "$server_pid"
+  sleep 0.3
+  kill -0 "$server_pid" 2>/dev/null || return 1
+  printf 'http://127.0.0.1:%s/proxy.pac' "$port"
+}
+
+# Signals the terminal sends to the whole foreground group must not reach the
+# networksetup calls of a restore: a second Ctrl-C there leaves the Mac proxied.
+# Children inherit an ignored signal, so ignore for the duration of the call.
+state_restore_ios_proxy() {
+  local directory="$1" status=0
+  trap '' INT TERM HUP
+  state_restore_ios_proxy_now "$directory" || status=$?
+  trap - INT TERM HUP
+  return "$status"
+}
+
 # 0: restored, or nothing was recorded
 # 1: the restore failed, so the state must be kept
-state_restore_ios_proxy() {
-  local directory="$1" service
+state_restore_ios_proxy_now() {
+  local directory="$1" service pac_pid
+  pac_pid="$(state_read_from "$directory" pac_pid)"
+  if [ -n "$pac_pid" ]; then
+    kill "$pac_pid" 2>/dev/null || true
+  fi
   [ -f "$directory/previous_ios_service" ] || return 0
   service="$(state_read_from "$directory" previous_ios_service)"
-  ios_proxy_apply "$service" web "$(state_read_from "$directory" previous_ios_web)" || return 1
-  ios_proxy_apply "$service" secureweb "$(state_read_from "$directory" previous_ios_secureweb)" || return 1
+  if [ -f "$directory/previous_ios_auto" ]; then
+    ios_autoproxy_apply "$service" "$(state_read_from "$directory" previous_ios_auto)" || return 1
+  fi
+  if [ -f "$directory/previous_ios_web" ]; then
+    ios_proxy_apply "$service" web "$(state_read_from "$directory" previous_ios_web)" || return 1
+    ios_proxy_apply "$service" secureweb "$(state_read_from "$directory" previous_ios_secureweb)" || return 1
+  fi
 }
 
 # Can simctl run under this developer dir? Command Line Tools are a legal

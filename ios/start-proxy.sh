@@ -57,15 +57,27 @@ check_mitmproxy_version "$MITMPROXY_MIN_LOCAL_VERSION"
 
 cleanup() {
   trap - EXIT INT TERM HUP USR1
+  local restore_failed=0 waited=0
   if [ -n "${DURATION_PID:-}" ]; then
     kill "$DURATION_PID" 2>/dev/null || true
   fi
+  # Put the Mac's proxy back first: mitmdump can linger on open websockets, and
+  # the Mac must not stay pointed at it while it does.
+  if [ "$STATE_ACQUIRED" -eq 1 ] && ! state_restore_ios_proxy "$STATE_DIR"; then
+    restore_failed=1
+  fi
   if [ -n "$PROXY_PID" ]; then
     kill "$PROXY_PID" 2>/dev/null || true
+    while kill -0 "$PROXY_PID" 2>/dev/null && [ "$waited" -lt 20 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    kill -KILL "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
   fi
-  if [ "$STATE_ACQUIRED" -eq 1 ] && ! state_restore_ios_proxy "$STATE_DIR"; then
+  if [ "$restore_failed" -eq 1 ]; then
     printf '  ! %-11s %s\n' 'cleanup' "couldn't restore your Mac proxy — run: proxy-lab reset ios" >&2
+    printf '    %s\n' 'if the network is down: networksetup -setautoproxystate "<service>" off' >&2
     return 0
   fi
   state_release
@@ -128,7 +140,7 @@ if [ "$CAPTURE_MODE" = "proxy" ]; then
   if lsof -t -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     fail "port $PROXY_PORT" 'already in use' 'free it, or pick another: PROXY_LAB_IOS_PORT=<port> proxy-lab start ios'
   fi
-  info '✓' 'mode' "system proxy — $(loopback_hosts | wc -l | tr -d ' ') dev hosts in /etc/hosts point at localhost, beyond local capture's reach"
+  info '✓' 'mode' "dev-host proxy — $(loopback_hosts | wc -l | tr -d ' ') dev hosts in /etc/hosts point at localhost, beyond local capture's reach"
   MODE_ARGS=(--listen-port "$PROXY_PORT")
 else
   MODE_ARGS=(--mode local:Simulator)
@@ -167,18 +179,19 @@ if [ "$CAPTURE_MODE" = "proxy" ]; then
   service="$(ios_network_service || true)"
   [ -n "$service" ] || fail 'proxy' "couldn't find your active network service" \
     'connect to a network, or: PROXY_LAB_IOS_MODE=local proxy-lab start ios'
+  pac_url="$(ios_pac_serve "127.0.0.1:$PROXY_PORT")" ||
+    fail 'proxy' "couldn't serve the proxy auto-config" \
+      'python3 is required, or use local capture: PROXY_LAB_IOS_MODE=local proxy-lab start ios'
   # Record first, change second: a crash in between still restores cleanly.
-  state_write previous_ios_web "$(ios_proxy_read "$service" web)"
-  state_write previous_ios_secureweb "$(ios_proxy_read "$service" secureweb)"
+  state_write previous_ios_auto "$(ios_autoproxy_read "$service")"
   state_write previous_ios_service "$service"
-  if ! { networksetup -setwebproxy "$service" 127.0.0.1 "$PROXY_PORT" &&
-    networksetup -setsecurewebproxy "$service" 127.0.0.1 "$PROXY_PORT"; } >/dev/null 2>&1; then
+  if ! networksetup -setautoproxyurl "$service" "$pac_url" >/dev/null 2>&1; then
     fail 'proxy' "couldn't set the proxy on $service" \
       'macOS may want admin rights — try once more from an admin account' \
       'or use local capture: PROXY_LAB_IOS_MODE=local proxy-lab start ios'
   fi
   state_write port "$PROXY_PORT"
-  info '✓' 'proxy' "$service → 127.0.0.1:$PROXY_PORT (restored on stop)"
+  info '✓' 'proxy' "$service → 127.0.0.1:$PROXY_PORT for dev hosts only (restored on stop)"
 fi
 mark_session_ready
 # First run installs the extension and macOS asks. Say so now, rather than

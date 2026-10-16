@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-10-16
+
+### Fixed
+
+- Restoring the Mac proxy after Ctrl-C failed when Ctrl-C was pressed twice:
+  the second signal also killed the `networksetup` call doing the restore.
+  The restore now ignores INT/TERM/HUP while it runs, and runs before mitmdump
+  is waited on (mitmdump is force-killed after about 2 seconds), so the Mac is
+  not left pointed at a dying proxy. A failed restore now also prints a manual
+  `networksetup` command.
+
+### Changed
+
+- iOS proxy mode no longer routes the whole Mac through mitmproxy. It serves a
+  proxy auto-config (PAC) file that sends only the hosts in your domain list
+  and the loopback hosts in `/etc/hosts` to the proxy; everything else, such as
+  Outlook or the browser, stays direct. The PAC falls back to DIRECT if the
+  proxy is down. The previous automatic proxy setting is restored on `stop`
+  and `reset`, which also end the PAC server.
+
 ## [2.3.2] - 2026-10-16
 
 ### Added
