@@ -10,6 +10,7 @@ PROXY_LAB_COMMON_LOADED=1
 # Pinned so today's one-liner is tomorrow's one-liner. A host `mitmdump`
 # still wins. Override with MITMPROXY_SPEC=mitmproxy==X.Y.Z when you need to.
 : "${MITMPROXY_SPEC:=mitmproxy==12.2.3}"
+: "${IOS_DEVELOPER_DIR:=}"
 
 # Exit codes are part of the contract: a script can branch on the reason a run
 # failed without parsing English. Keep this table in sync with README.md.
@@ -197,6 +198,67 @@ use_android_sdk() {
     fi
   done
   export PATH
+}
+
+# Can simctl run under this developer dir? Command Line Tools are a valid
+# xcode-select target and contain no simctl, so "xcode-select works" is not
+# the question. Ask whether the simulator toolchain actually answers.
+simctl_works() {
+  DEVELOPER_DIR="$1" xcrun simctl list devicetypes >/dev/null 2>&1
+}
+
+# Which Xcode to drive. Never pin a version: an explicit DEVELOPER_DIR wins,
+# then the xcode-select selection, then the newest installed Xcode that can
+# run simctl. Command Line Tools are a legal xcode-select target and carry no
+# simctl, so a selection that cannot answer is skipped rather than trusted.
+# Exported for the rest of the process tree only; the machine-wide selection
+# is the user's to change.
+ios_developer_dir() {
+  if [ -n "$IOS_DEVELOPER_DIR" ]; then
+    printf '%s' "$IOS_DEVELOPER_DIR"
+    return 0
+  fi
+
+  local selected listing candidate fallback=""
+
+  # An explicit DEVELOPER_DIR is a decision, not a default: honour it or report
+  # it broken, rather than quietly driving a different Xcode than the one asked
+  # for. A Command Line Tools selection, by contrast, is machine state that
+  # predates the run, so it falls through to a real Xcode below.
+  if [ -n "${DEVELOPER_DIR:-}" ]; then
+    simctl_works "$DEVELOPER_DIR" || return 1
+    IOS_DEVELOPER_DIR="$DEVELOPER_DIR"
+  else
+    selected="$(xcode-select -p 2>/dev/null || true)"
+    if [ -n "$selected" ] && simctl_works "$selected"; then
+      IOS_DEVELOPER_DIR="$selected"
+    fi
+  fi
+
+  if [ -z "$IOS_DEVELOPER_DIR" ]; then
+    listing="$(find /Applications "$HOME/Applications" -maxdepth 1 -name 'Xcode*.app' 2>/dev/null |
+      sort -Vr || true)"
+    while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      candidate="$candidate/Contents/Developer"
+      simctl_works "$candidate" || continue
+      [ -n "$fallback" ] || fallback="$candidate"
+      # A device booted by an older Xcode is invisible to the newer one, so a
+      # candidate that can see a booted device outranks a merely newer one.
+      if DEVELOPER_DIR="$candidate" xcrun simctl list devices booted 2>/dev/null |
+        grep -q '(Booted)'; then
+        IOS_DEVELOPER_DIR="$candidate"
+        break
+      fi
+    done <<EOF
+$listing
+EOF
+    IOS_DEVELOPER_DIR="${IOS_DEVELOPER_DIR:-$fallback}"
+  fi
+
+  [ -n "$IOS_DEVELOPER_DIR" ] || return 1
+  export DEVELOPER_DIR="$IOS_DEVELOPER_DIR"
+  printf '%s' "$IOS_DEVELOPER_DIR"
 }
 
 # Every launcher cleans up the same way on every exit path.
@@ -633,15 +695,18 @@ ios_booted_udid() {
     printf '%s' "$UDID"
     return 0
   fi
-  command -v xcrun >/dev/null 2>&1 || return 1
+  command -v xcrun >/dev/null 2>&1 || return 4
+  ios_developer_dir >/dev/null || return 4
   xcrun simctl list devices booted 2>/dev/null |
     sed -nE 's/.*\(([0-9A-Fa-f-]+)\) \(Booted\).*/\1/p' |
     head -n 1
 }
 
+# 2 no xcrun, 4 no usable Xcode, 3 no booted simulator, 1 add-root-cert failed.
 trust_ios_certificate() {
   local udid
   command -v xcrun >/dev/null 2>&1 || return 2
+  ios_developer_dir >/dev/null || return 4
   udid="$(ios_booted_udid || true)"
   [ -n "$udid" ] || return 3
   xcrun simctl keychain "$udid" add-root-cert "$CERT" >/dev/null 2>&1 || return 1

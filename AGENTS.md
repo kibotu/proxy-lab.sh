@@ -104,6 +104,12 @@ Detect these early. Do not retry.
    the XML; someone still has to add the printed attribute to
    `AndroidManifest.xml`. Never commit that for a release build.
 
+No Xcode is a human step. proxy-lab resolves the iOS toolchain itself, in order:
+an explicit `DEVELOPER_DIR`, the `xcode-select -p` selection if that directory
+can run `simctl`, then the newest installed Xcode that can. No version is
+pinned. When none resolves, `doctor ios` fails with `no usable Xcode` and
+`start ios` exits 5; it needs `sudo xcode-select -s <Xcode>.app/Contents/Developer`.
+
 ## Recovery
 
 `stop` restores the Android proxy recorded before the run. `logs` still works
@@ -119,4 +125,5 @@ enough: `reset`.
 | `PROXY_LAB_SCRIPTS` | Newline-separated addon scripts. |
 | `PROXY_LAB_MITMDUMP` | Specific `mitmdump`, skipping discovery. |
 | `MITMPROXY_SPEC` | uv fallback. Default `mitmproxy==12.2.3`. |
+| `DEVELOPER_DIR` | iOS only. Xcode to drive. Honoured when set, verified to carry `simctl`. |
 | `PORT`, `AVD`, `SERIAL`, `BOOT_TIMEOUT` | Android only. |

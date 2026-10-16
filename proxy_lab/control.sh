@@ -408,20 +408,39 @@ run_doctor() {
   fi
 
   if selected_platform ios; then
+    local developer_dir unusable
     if [ "$JSON_OUTPUT" -ne 1 ]; then
       printf '%s\n' "  selected UDID: ${UDID:-auto}"
     fi
     if command -v xcrun >/dev/null 2>&1; then
       doctor_check ok 'xcrun' "$(command -v xcrun)"
-      booted="$(xcrun simctl list devices booted 2>/dev/null || true)"
-      if [ "$JSON_OUTPUT" -ne 1 ]; then
-        printf '%s\n' '  booted simulators:'
-        printf '%s\n' "$booted" | sed 's/^/    /'
-      fi
-      if printf '%s' "$booted" | grep -q '(Booted)'; then
-        doctor_check ok 'simulator' 'a simulator is booted'
+      # Call, do not capture: ios_developer_dir exports DEVELOPER_DIR into the
+      # current shell, and a command substitution would throw that away.
+      if ios_developer_dir >/dev/null 2>&1; then
+        developer_dir="$IOS_DEVELOPER_DIR"
+        booted="$(xcrun simctl list devices booted 2>/dev/null || true)"
+        if [ "$JSON_OUTPUT" -ne 1 ]; then
+          printf '%s\n' "  Xcode: $developer_dir"
+          printf '%s\n' '  booted simulators:'
+          printf '%s\n' "$booted" | sed 's/^/    /'
+        fi
+        if printf '%s' "$booted" | grep -q '(Booted)'; then
+          doctor_check ok 'simulator' 'a simulator is booted'
+        else
+          doctor_check warn 'simulator' 'none booted; start one in Xcode or Device Hub, then: proxy-lab start ios'
+        fi
       else
-        doctor_check warn 'simulator' 'none booted; start one in Xcode or Device Hub, then: proxy-lab start ios'
+        # xcode-select often points at Command Line Tools, which exist and
+        # answer, but ship no simctl. That is a failure, not an empty device
+        # list, and only the real toolchain can say which one to select.
+        if [ -n "${DEVELOPER_DIR:-}" ]; then
+          unusable="DEVELOPER_DIR=$DEVELOPER_DIR"
+        else
+          unusable="xcode-select points at $(xcode-select -p 2>/dev/null || echo 'nothing')"
+        fi
+        doctor_check fail 'simulator' "no usable Xcode ($unusable, which has no simctl)" \
+          'select a full Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer' \
+          'or: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer proxy-lab doctor ios'
       fi
       # Local capture needs a signed network extension approved by the user.
       # There is no non-interactive way to read that approval, so say so
@@ -430,9 +449,6 @@ run_doctor() {
         'first run: approve the mitmproxy network extension when macOS asks — there is no non-interactive check'
     else
       doctor_check fail 'xcrun' 'not found — install Xcode and its command-line tools'
-    fi
-    if [ "$JSON_OUTPUT" -ne 1 ] && command -v xcode-select >/dev/null 2>&1; then
-      printf '%s\n' "  Xcode: $(xcode-select -p 2>/dev/null || true)"
     fi
   fi
 

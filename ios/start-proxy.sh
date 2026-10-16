@@ -75,6 +75,9 @@ if [ "$TRUST_ONLY" -eq 1 ]; then
     case "$trust_status" in
       2) fail 'simulator' 'xcrun is not available' 'install Xcode and its command-line tools' ;;
       3) fail 'simulator' 'no booted iOS Simulator found' 'boot one in Xcode or pass --udid' ;;
+      4) fail 'simulator' "no Xcode with a usable simulator toolchain ($(xcode-select -p 2>/dev/null || echo 'unknown selection'))" \
+        'select a full Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer' \
+        'or point proxy-lab at one for this run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer proxy-lab start ios' ;;
       *) fail 'simulator' 'could not install the CA into the Simulator keychain' 'use mitm.it and trust the downloaded profile manually' ;;
     esac
   fi
@@ -87,7 +90,15 @@ ensure_host_ca
 
 trust_status=0
 trust_ios_certificate || trust_status=$?
-if [ "$trust_status" -ne 0 ]; then
+if [ "$trust_status" -eq 2 ]; then
+  fail 'simulator' 'xcrun is not available' \
+    'install Xcode and its command-line tools'
+elif [ "$trust_status" -eq 4 ]; then
+  fail 'simulator' "no Xcode with a usable simulator toolchain ($(xcode-select -p 2>/dev/null || echo 'unknown selection'))" \
+    'select a full Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer' \
+    'or point proxy-lab at one for this run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer proxy-lab start ios'
+elif [ "$trust_status" -ne 0 ]; then
+  # The capture itself still works; only the automatic trust step is lost.
   info '!' 'simulator' 'automatic CA trust unavailable; use mitm.it in the booted Simulator'
 fi
 

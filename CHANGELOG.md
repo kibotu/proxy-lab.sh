@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-16
+
+### Fixed
+
+- The iOS CA install no longer fails silently when `xcode-select` points at the
+  standalone Command Line Tools. Those are a legal `xcode-select` target, they
+  are what a fresh machine usually resolves to, and they ship no `simctl` — so
+  `xcrun simctl` errored out while every guard in `trust_ios_certificate`
+  passed. Simulator discovery came back empty, and the run reported
+  `automatic CA trust unavailable` even with a booted simulator and a healthy
+  local capture.
+- `doctor ios` reported `simulator: none booted` for that case and still
+  returned `ok: true`. A broken toolchain is now a `fail` that names the
+  selection at fault, so `doctor --json` no longer reads green while the CA
+  cannot be installed.
+- `start ios` distinguishes a missing toolchain from a missing simulator. Only
+  the latter degrades to manual trust via `mitm.it`; an unusable developer
+  directory now stops the run with the `xcode-select` command that fixes it.
+- `trust ios` reports the same three reasons separately instead of one generic
+  message.
+
+### Added
+
+- `DEVELOPER_DIR` for iOS runs: the Xcode to drive, verified to carry `simctl`.
+- Resolution order for the iOS toolchain, with no version pinned anywhere: an
+  explicit `DEVELOPER_DIR`, then the `xcode-select -p` selection if that
+  directory can run `simctl`, then the newest installed Xcode that can. With
+  several Xcodes installed, one that can see a booted simulator wins over a
+  merely newer one, since a device booted by an older Xcode is invisible to the
+  newer toolchain. The result is exported to the run's own process tree only;
+  the machine-wide `xcode-select` setting is never modified, and no step needs
+  `sudo`.
+
 ## [2.1.0] - 2026-09-29
 
 ### Added

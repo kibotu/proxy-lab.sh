@@ -27,7 +27,7 @@ mitmproxy is pinned inside the wrapper (`mitmproxy==12.2.3`). Override with
 
 ## Contents
 
-- [Quickstart](#quickstart) — [Android](#android), [iOS](#ios)
+- [Quickstart](#quickstart) — [Android](#android), [iOS](#ios), [Which Xcode](#which-xcode)
 - [Automation](#automation) — running it from a script or an agent
 - [Choose the domains to log](#choose-the-domains-to-log)
 - [Addons and examples](#addons-and-examples)
@@ -138,6 +138,28 @@ uvx proxy-lab trust ios --udid 11111111-1111-1111-1111-111111111111
 
 No root or reboot is required. HTTPS interception still requires the simulator to trust the CA.
 
+### Which Xcode
+
+proxy-lab needs `simctl`, which ships with Xcode and **not** with the standalone Command Line Tools. `xcode-select -p` can legally point at the Command Line Tools, and on a fresh machine it usually does — which leaves `xcrun simctl` unable to run even though `xcrun` itself is on `PATH`. No version is ever pinned. proxy-lab resolves the toolchain per run:
+
+1. `DEVELOPER_DIR`, when you set it. Verified to carry `simctl`; if it does not, that is an error rather than a silent substitution.
+2. The `xcode-select -p` selection, when that directory can actually run `simctl`.
+3. Otherwise, the newest Xcode under `/Applications` or `~/Applications` that can. When several are installed, one that can see a booted simulator wins over a merely newer one.
+
+The choice is exported to the run's own process tree. Your machine-wide `xcode-select` setting is never changed, and nothing needs `sudo`. To make a different Xcode the machine default:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+```
+
+Or point one run at it:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer uvx proxy-lab start ios
+```
+
+`doctor` reports the resolved path under `Xcode:` and fails with `no usable Xcode` when none of the three can be resolved.
+
 ## Automation
 
 `start` runs in the foreground until Ctrl-C. That is right for a human and
@@ -232,6 +254,7 @@ Further environment variables:
 | `PROXY_LAB_MITMDUMP` | Use a specific `mitmdump` binary instead of discovery. |
 | `MITMPROXY_SPEC` | mitmproxy spec for the uv fallback. Defaults to `mitmproxy==12.2.3`. |
 | `PROXY_LAB_SKIP_UPDATE_CHECK` | `1` skips the PyPI version check that `doctor` runs. |
+| `DEVELOPER_DIR` | iOS only. The Xcode to drive. Honoured when set, and verified to carry `simctl`. See [Which Xcode](#which-xcode). |
 
 Environment variables remain supported for automation:
 
@@ -305,7 +328,7 @@ shellcheck android/start-proxy.sh ios/start-proxy.sh proxy_lab/common.sh proxy_l
 - **mitmproxy:** Optional host `mitmdump`; otherwise the launchers request pinned `mitmproxy==12.2.3` through uv. Override with `MITMPROXY_SPEC`. See [Quickstart](#quickstart) for install commands.
 - **[curl](https://curl.se/)** — optional; `doctor` uses it to mention a newer mitmproxy release. A failed check is ignored.
 - **Android:** `adb` and `emulator` (Android Studio's SDK provides both — they do not need to be on `PATH`), plus a Google APIs AVD. Your debug build must trust user CAs, as shown in [the Android quickstart](#android).
-- **iOS:** Xcode and a local-mode-capable mitmproxy (`10.1.5+`; see [macOS local capture](https://www.mitmproxy.org/posts/local-capture/macos/)).
+- **iOS:** Xcode and a local-mode-capable mitmproxy (`10.1.5+`; see [macOS local capture](https://www.mitmproxy.org/posts/local-capture/macos/)). The Command Line Tools alone are not enough: they carry no `simctl`. See [Which Xcode](#which-xcode).
 
 The Android script also uses `openssl` and `lsof`, which macOS ships. Missing tools print the command that fixes them. When a start fails, run `proxy-lab doctor` first.
 
@@ -318,6 +341,8 @@ Start with `uvx proxy-lab doctor android` (or `ios`). It prints the next command
 - **`net::ERR_CERT_AUTHORITY_INVALID`** — the app does not trust the CA. Confirm the [network security config](#android) is in the build you are running, and that it is a debug build. To reinstall the certificate: `adb root && adb shell rm /data/misc/user/0/cacerts-added/<hash>.0`, then run the script again. Restart the app afterwards, because a running process keeps its trust anchors.
 - **Requests time out** — the proxy stopped while the emulator still points at it. Run `uvx proxy-lab status android`, then `uvx proxy-lab stop android` or `uvx proxy-lab reset android`. The launcher restores the exact proxy value that existed before the run; `reset` is the explicit recovery path for stale state.
 - **"No internet connection" while proxied** — Android's connectivity check may report partial connectivity because it does not trust user CAs. App traffic may still work.
+- **`xcrun: error: unable to find utility "simctl"`** — the selected developer directory is the Command Line Tools, which ship no simulator toolchain. proxy-lab falls back to an installed Xcode automatically; run `uvx proxy-lab doctor ios` to see which one it resolved, or select one permanently with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. See [Which Xcode](#which-xcode).
+- **`no usable Xcode`** — no candidate could run `simctl`. Install a full Xcode, or point one run at it with `DEVELOPER_DIR=…`.
 - **Nothing shows up on iOS** — make sure a simulator is running (from Xcode or Device Hub), the network extension was allowed, and the CA is trusted. Do not configure a system proxy.
 - **No `[local_router]` lines** — the host is not in the domains file in use. See [Choose the domains to log](#choose-the-domains-to-log).
 
