@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-10-16
+
 ### Changed
 
 - The package version now comes from the git tag via hatch-vcs. Nothing in the
@@ -14,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Releasing is now just tagging the release commit `X.Y.Z`; there is no version
   to bump in `pyproject.toml`. `uv.lock` records the root as `(dynamic)`, so it
   no longer changes on every commit.
+
+### Fixed
+
+- The proxy smoke test no longer starts the addon without a domains file.
+  Since 2.4.0 that made it capture the host names in `/etc/hosts`, which on a
+  CI runner holds no `example.com`, so the router never logged the fetch.
 
 ## [2.4.0] - 2026-10-16
 
