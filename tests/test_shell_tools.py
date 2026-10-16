@@ -24,6 +24,24 @@ class ShellIntegrationTests(unittest.TestCase):
             check=False,
         )
 
+    def approved_extension(self, fake_bin: Path) -> None:
+        """Stub the network-extension approval.
+
+        Without this the launcher reads the real host state, so a developer
+        machine with mitmproxy installed but not approved fails these tests
+        while CI, which has no systemextensionsctl at all, passes them.
+        """
+        stub = fake_bin / "systemextensionsctl"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "cat <<'PAYLOAD'\n"
+            "\t*\tTEAM\torg.mitmproxy.macos-redirector.network-extension (2.0/1)"
+            "\tnetwork-extension\t[activated enabled]\n"
+            "PAYLOAD\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
     def test_ios_trust_uses_selected_udid_with_fake_xcrun(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -196,6 +214,49 @@ printf '%s\\n' '== Devices ==' '    iPhone (SIM-UDID) (Booted)'
                 xcrun_log.read_text(encoding="utf-8").splitlines(),
                 ["|simctl list devices booted"],
             )
+
+    def test_ios_extension_state_is_read_from_systemextensionsctl(self) -> None:
+        # An installed-but-unapproved extension makes mitmdump capture nothing
+        # while reporting itself healthy, so the state has to be read, not
+        # assumed. Each case is a different systemextensionsctl line.
+        header = (
+            "--- com.apple.system_extension.network_extension ---\n"
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n"
+        )
+        cases = {
+            "pending": "\t*\tTEAM\torg.mitmproxy.macos-redirector."
+            "network-extension (2.0/1)\tnetwork-extension\t"
+            "[activated waiting for user]\n",
+            "approved": "\t*\tTEAM\torg.mitmproxy.macos-redirector."
+            "network-extension (2.0/1)\tnetwork-extension\t[activated enabled]\n",
+            "absent": "",
+            "unknown": "\t*\tTEAM\torg.mitmproxy.macos-redirector."
+            "network-extension (2.0/1)\tnetwork-extension\t[something else]\n",
+        }
+        for expected, line in cases.items():
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                fake_bin = root / "bin"
+                home = root / "home"
+                fake_bin.mkdir()
+                home.mkdir()
+                (fake_bin / "systemextensionsctl").write_text(
+                    f"#!/usr/bin/env bash\ncat <<'PAYLOAD'\n{header}{line}PAYLOAD\n",
+                    encoding="utf-8",
+                )
+                (fake_bin / "systemextensionsctl").chmod(0o755)
+                env = os.environ.copy()
+                env.update({"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(home)})
+                result = self.run_command(
+                    [
+                        "bash",
+                        "-c",
+                        f'source "{ROOT}/proxy_lab/common.sh"; mitmproxy_extension_state',
+                    ],
+                    env,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
 
     def test_android_start_restores_proxy_and_removes_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -668,6 +729,7 @@ exit 0
                 encoding="utf-8",
             )
             fake_xcrun.chmod(0o755)
+            self.approved_extension(fake_bin)
 
             env = os.environ.copy()
             env.update(
@@ -724,6 +786,7 @@ exit 0
                 encoding="utf-8",
             )
             fake_xcrun.chmod(0o755)
+            self.approved_extension(fake_bin)
 
             env = os.environ.copy()
             env.update(

@@ -442,11 +442,29 @@ run_doctor() {
           'select a full Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer' \
           'or: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer proxy-lab doctor ios'
       fi
-      # Local capture needs a signed network extension approved by the user.
-      # There is no non-interactive way to read that approval, so say so
-      # instead of letting `start` fail with an unexplained hang.
-      doctor_check warn 'capture' \
-        'first run: approve the mitmproxy network extension when macOS asks — there is no non-interactive check'
+      # Local capture runs through a macOS Network Extension the user has to
+      # grant. Until it is granted mitmdump starts, reports itself healthy, and
+      # captures nothing — so the state is read rather than hoped for. The
+      # first run is the only case macOS still prompts for; after that the
+      # prompt does not come back on its own.
+      case "$(mitmproxy_extension_state)" in
+        approved)
+          doctor_check ok 'extension' 'mitmproxy network extension approved'
+          ;;
+        pending)
+          doctor_check fail 'extension' \
+            "installed but not approved, so local capture will not see any traffic — open \"$EXTENSION_SETTINGS_PANE\" and allow mitmproxy, then re-run" \
+            "or from a terminal: open \"$EXTENSION_SETTINGS_PANE\""
+          ;;
+        absent)
+          doctor_check warn 'extension' \
+            'not installed yet; the first proxy-lab start ios installs it and macOS asks you to allow it'
+          ;;
+        *)
+          doctor_check warn 'extension' \
+            'could not read the network extension state; check System Settings > General > Login Items & Extensions'
+          ;;
+      esac
     else
       doctor_check fail 'xcrun' 'not found — install Xcode and its command-line tools'
     fi

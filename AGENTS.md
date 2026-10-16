@@ -95,9 +95,14 @@ mitmproxy's own console still prints unredacted URLs — ignore it; read jsonl.
 
 Detect these early. Do not retry.
 
-1. **iOS network extension.** First `start ios` shows a macOS approval prompt.
-   `doctor --json` reports this as a `capture` check. There is no
-   non-interactive way to read the approval.
+1. **iOS network extension.** The first `start ios` makes macOS ask for
+   approval of mitmproxy's Network Extension. Until it is granted, mitmdump
+   runs and captures nothing, so `start ios` refuses to start (exit 5) rather
+   than return an empty log. `doctor --json` reports this as the `extension`
+   check: `fail` means installed but unapproved, which needs a human in System
+   Settings → General → Login Items & Extensions → Network Extensions;
+   `warn` with `not installed yet` just means the first run has not happened.
+   There is no non-interactive way to grant it.
 2. **Android emulator image.** CA install needs `adb root`. Play Store images
    refuse it. Use a Google APIs AVD.
 3. **Android debug build.** The app must trust user CAs. `init android` writes
@@ -127,3 +132,4 @@ enough: `reset`.
 | `MITMPROXY_SPEC` | uv fallback. Default `mitmproxy==12.2.3`. |
 | `DEVELOPER_DIR` | iOS only. Xcode to drive. Honoured when set, verified to carry `simctl`. |
 | `PORT`, `AVD`, `SERIAL`, `BOOT_TIMEOUT` | Android only. |
+ |

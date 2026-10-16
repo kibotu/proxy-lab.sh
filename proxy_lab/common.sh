@@ -11,6 +11,9 @@ PROXY_LAB_COMMON_LOADED=1
 # still wins. Override with MITMPROXY_SPEC=mitmproxy==X.Y.Z when you need to.
 : "${MITMPROXY_SPEC:=mitmproxy==12.2.3}"
 : "${IOS_DEVELOPER_DIR:=}"
+# Where macOS keeps Network Extension approvals. Verified present on macOS 26.
+# shellcheck disable=SC2034 # consumed by proxy_lab/control.sh and ios/start-proxy.sh
+EXTENSION_SETTINGS_PANE="x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
 
 # Exit codes are part of the contract: a script can branch on the reason a run
 # failed without parsing English. Keep this table in sync with README.md.
@@ -21,7 +24,7 @@ label_exit_code() {
     arguments) printf '2' ;;
     config|addon|router) printf '3' ;;
     tools) printf '4' ;;
-    emulator|root|device\ CA|host\ CA|simulator|proxy) printf '5' ;;
+    emulator|root|device\ CA|host\ CA|simulator|proxy|extension) printf '5' ;;
     port*) printf '6' ;;
     mitmproxy|mitmdump) printf '7' ;;
     session|state|timeout) printf '8' ;;
@@ -198,6 +201,31 @@ use_android_sdk() {
     fi
   done
   export PATH
+}
+
+# Local capture runs through a macOS Network Extension that the user has to
+# grant. Until it is granted, mitmdump starts happily and captures nothing at
+# all — no traffic, no error, no hint. So the state is read rather than assumed.
+#   approved  granted and active
+#   pending   installed, still waiting for the user to allow it
+#   absent    not installed yet; the first local-mode run installs it
+#   unknown   systemextensionsctl unavailable, or a state we do not recognise
+mitmproxy_extension_state() {
+  local line
+  if ! command -v systemextensionsctl >/dev/null 2>&1; then
+    printf 'unknown'
+    return 0
+  fi
+  line="$(systemextensionsctl list 2>/dev/null | grep -i mitmproxy | head -n 1)"
+  if [ -z "$line" ]; then
+    printf 'absent'
+  else
+    case "$line" in
+      *'[activated enabled]'*) printf 'approved' ;;
+      *'waiting for user'*) printf 'pending' ;;
+      *) printf 'unknown' ;;
+    esac
+  fi
 }
 
 # Can simctl run under this developer dir? Command Line Tools are a legal
@@ -593,10 +621,12 @@ run_detached() {
   shift 2
   mkdir -p "$(dirname "$log")"
   : >"$log"
+  # nohup plus redirected stdio already detaches the child. Do not disown it:
+  # disowning drops the job from the table, after which `wait` can no longer
+  # report its exit status and the caller sees a failed run as status 0.
   PROXY_LAB_DETACH_CHILD=1 \
     nohup bash "$script" "$@" >>"$log" 2>&1 </dev/null &
   DETACH_PID=$!
-  disown "$DETACH_PID" 2>/dev/null || true
 }
 
 # Parent side of --detach: hand off to a detached child and block only until the

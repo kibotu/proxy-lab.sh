@@ -102,6 +102,19 @@ elif [ "$trust_status" -ne 0 ]; then
   info '!' 'simulator' 'automatic CA trust unavailable; use mitm.it in the booted Simulator'
 fi
 
+# An installed-but-unapproved extension captures nothing while mitmdump still
+# reports itself healthy. Fail here rather than hand back a proxy that logs
+# nothing and looks fine. `absent` is the first run, which still needs to start
+# mitmdump so macOS can install the extension and ask.
+case "$(mitmproxy_extension_state)" in
+  pending)
+    fail 'extension' 'the mitmproxy network extension is installed but not approved' \
+      "nothing will be captured until you allow it: open \"$EXTENSION_SETTINGS_PANE\"" \
+      'System Settings > General > Login Items & Extensions > Network Extensions' \
+      'then: proxy-lab start ios'
+    ;;
+esac
+
 "${MITMDUMP[@]}" \
   --mode local:Simulator \
   --showhost \
@@ -125,6 +138,11 @@ if ! kill -0 "$PROXY_PID" 2>/dev/null; then
     'first run? approve the mitmproxy network extension when macOS asks'
 fi
 mark_session_ready
+# First run installs the extension and macOS asks. Report that it is waiting
+# now, rather than letting the user discover an empty log later.
+if [ "$(mitmproxy_extension_state)" = 'pending' ]; then
+  info '!' 'extension' "approve it to capture traffic: open \"$EXTENSION_SETTINGS_PANE\""
+fi
 if [ -n "${DURATION:-}" ]; then
   info '✓' 'mitmdump' "local:Simulator — stopping in ${DURATION}s"
   start_duration_watchdog

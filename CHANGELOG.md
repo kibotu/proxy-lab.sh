@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-16
+
+### Added
+
+- `doctor ios` reports the state of mitmproxy's macOS Network Extension as a
+  new `extension` check, read from `systemextensionsctl`: `ok` when approved,
+  `fail` when installed but still waiting for the user, `warn` when not
+  installed yet, and `warn` when the state cannot be read. This is the failure
+  that looks like success: mitmdump starts, reports itself healthy, and
+  captures nothing at all.
+- The `capture` doctor check is gone. It warned that there was "no
+  non-interactive check" for the approval, which `extension` now contradicts
+  and supersedes; keeping both meant one of them was always wrong.
+- `start ios` refuses to start when the extension is installed but unapproved
+  (exit 5) instead of returning a proxy that will never log a request, and
+  prints the System Settings path plus a pasteable
+  `open x-apple.systempreferences:com.apple.LoginItems-Settings.extension`.
+  The first run, where the extension does not exist yet and macOS still has to
+  ask, is unaffected. After a first run the state is re-checked, so the prompt
+  is reported as soon as it appears instead of leaving an empty log to
+  investigate.
+
+### Fixed
+
+- A detached `start --json` reported the child's failure as `status 0`.
+  `run_detached` disowned the child, and `wait` on a disowned PID can no
+  longer report an exit status, so a run that failed with 5 looked successful
+  in the message. `nohup` plus redirected stdio already detaches the process;
+  the `disown` is gone, so the real status reaches the caller.
+- The iOS launcher tests read the developer's real network-extension state, so
+  they passed on CI, which has no `systemextensionsctl`, and failed on any Mac
+  where mitmproxy was installed but not yet approved. They now stub it.
+
 ## [2.2.1] - 2026-10-16
 
 ### Fixed

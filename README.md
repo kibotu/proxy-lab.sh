@@ -130,7 +130,13 @@ It also attempts to install the mitmproxy CA into the Simulator keychain with `s
 uvx proxy-lab trust ios --udid 11111111-1111-1111-1111-111111111111
 ```
 
-**3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. If macOS has not approved the redirector yet, approve the prompt. Local capture is outbound-only; no system or app proxy setting is required. If you previously configured a manual system proxy, turn it off so it does not duplicate the capture path.
+**3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. macOS installs mitmproxy as a Network Extension the first time local capture starts and asks you to allow it. Allow it, then confirm:
+
+```bash
+uvx proxy-lab doctor ios      # the extension check must read ✓
+```
+
+If the check reports the extension installed but not approved, open **System Settings → General → Login Items & Extensions → Network Extensions** and allow mitmproxy, or run `open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"`. Until it is approved, mitmdump starts normally and captures **nothing** — so `start ios` refuses to start in that state instead of handing back an empty log. Local capture is outbound-only; no system or app proxy setting is required. If you previously configured a manual system proxy, turn it off so it does not duplicate the capture path.
 
 **4. Trust the CA manually if needed.** If automatic `simctl` installation is unavailable, open [`mitm.it`](http://mitm.it) in the simulator's Safari and download the profile. The page is served through local capture, so extension approval must work first. Install it under **Settings → General → VPN & Device Management**, then enable full trust under **Settings → General → About → Certificate Trust Settings**.
 
@@ -298,7 +304,7 @@ Failures are distinguishable without reading the message:
 | 2 | Invalid arguments or flags. |
 | 3 | Invalid config, or a missing input file. |
 | 4 | A required tool is not on `PATH`. |
-| 5 | Device, emulator, or CA failure. |
+| 5 | Device, emulator, network extension, or CA failure. |
 | 6 | The requested port is already in use. |
 | 7 | mitmproxy is missing, too old, or failed to start. |
 | 8 | Session state conflict, or a detached run that never became ready. |
@@ -344,6 +350,7 @@ Start with `uvx proxy-lab doctor android` (or `ios`). It prints the next command
 - **"No internet connection" while proxied** — Android's connectivity check may report partial connectivity because it does not trust user CAs. App traffic may still work.
 - **`xcrun: error: unable to find utility "simctl"`** — the selected developer directory is the Command Line Tools, which ship no simulator toolchain. proxy-lab falls back to an installed Xcode automatically; run `uvx proxy-lab doctor ios` to see which one it resolved, or select one permanently with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. See [Which Xcode](#which-xcode).
 - **`no usable Xcode`** — no candidate could run `simctl`. Install a full Xcode, or point one run at it with `DEVELOPER_DIR=…`.
+- **`✗ extension installed but not approved`** — mitmdump is running but the network extension is not, so nothing is captured at all. This is the one failure mode that looks like a working proxy. Approve it: `open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"`, then re-run. `start ios` refuses to start in this state (exit 5).
 - **Nothing shows up on iOS** — make sure a simulator is running (from Xcode or Device Hub), the network extension was allowed, and the CA is trusted. Do not configure a system proxy.
 - **No `[local_router]` lines** — the host is not in the domains file in use. See [Choose the domains to log](#choose-the-domains-to-log).
 
