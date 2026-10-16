@@ -710,7 +710,9 @@ state_stop_recorded_proxy() {
     sleep 0.1
     waited=$((waited + 1))
   done
-  state_pid_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  if state_pid_alive "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
   info '✓' 'cleanup' "ended a leftover mitmdump (pid $pid)"
 }
 
