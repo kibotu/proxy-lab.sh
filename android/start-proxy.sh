@@ -157,7 +157,7 @@ boot_emulator() {
       while [ -z "$serial" ]; do
         serial="$(find_emulator)"
         [ -n "$serial" ] && break
-        [ "$SECONDS" -lt "$deadline" ] || fail 'emulator' 'never showed up in adb devices' \
+        [ "$SECONDS" -lt "$deadline" ] || fail 'emulator' "didn't appear in adb devices" \
           "Log: $EMULATOR_LOG"
         sleep 1
       done
@@ -173,8 +173,8 @@ boot_emulator() {
   root_out="$(adb root 2>&1 || true)"
   case "$root_out" in
     *'cannot run as root'*)
-      fail 'root' 'this AVD image refuses adb root' \
-        'Use a "Google APIs" image, not "Google APIs Play Store" — see README.md, Requirements' ;;
+      fail 'root' "this AVD image doesn't allow adb root" \
+        'switch to a "Google APIs" image (not "Play Store") — see README.md, Requirements' ;;
   esac
   adb wait-for-device
 }
@@ -196,14 +196,14 @@ ensure_device_ca() {
     fail 'device CA' "could not push ${hash}.0" "${out##*$'\n'}"
   out="$(adb shell "chmod 644 $remote && restorecon $remote $USER_CA_DIR" 2>&1)" || {
     adb shell "rm -f $remote" >/dev/null 2>&1 || true
-    fail 'device CA' 'permissions/SELinux label failed (rolled back)' "${out##*$'\n'}"
+    fail 'device CA' "couldn't set CA permissions — rolled back" "${out##*$'\n'}"
   }
   adb reboot
   wait_boot
   adb root >/dev/null 2>&1 || true
   adb wait-for-device
   adb shell "test -f $remote" 2>/dev/null ||
-    fail 'device CA' 'cert did not survive reboot' "check: adb root && adb shell ls $USER_CA_DIR"
+    fail 'device CA' "the CA didn't survive the reboot" "check: adb root && adb shell ls $USER_CA_DIR"
   info '✓' 'device CA' "${hash}.0 trusted"
   state_write ca_hash "$hash"
 }
@@ -296,7 +296,7 @@ start_proxy() {
   done
   if [ -z "$up" ]; then
     wait "$PROXY_PID" 2>/dev/null || true
-    fail 'mitmdump' "exited before listening on :$PORT" 'the output above says why'
+    fail 'mitmdump' "stopped before listening on :$PORT" 'the output above says why'
   fi
   mark_session_ready
   if [ -n "${DURATION:-}" ]; then

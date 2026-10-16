@@ -64,6 +64,10 @@ cleanup() {
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
   fi
+  if [ "$STATE_ACQUIRED" -eq 1 ] && ! state_restore_ios_proxy "$STATE_DIR"; then
+    printf '  ! %-11s %s\n' 'cleanup' "couldn't restore your Mac proxy — run: proxy-lab reset ios" >&2
+    return 0
+  fi
   state_release
 }
 
@@ -73,12 +77,12 @@ if [ "$TRUST_ONLY" -eq 1 ]; then
   trust_ios_certificate || trust_status=$?
   if [ "$trust_status" -ne 0 ]; then
     case "$trust_status" in
-      2) fail 'simulator' 'xcrun is not available' 'install Xcode and its command-line tools' ;;
-      3) fail 'simulator' 'no booted iOS Simulator found' 'boot one in Xcode or pass --udid' ;;
+      2) fail 'simulator' "xcrun isn't available" 'install Xcode and its command-line tools' ;;
+      3) fail 'simulator' 'no Simulator is booted' 'boot one in Xcode, or pass --udid' ;;
       4) fail 'simulator' "no Xcode with a usable simulator toolchain ($(xcode-select -p 2>/dev/null || echo 'unknown selection'))" \
         'select a full Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer' \
         'or point proxy-lab at one for this run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer proxy-lab start ios' ;;
-      *) fail 'simulator' 'could not install the CA into the Simulator keychain' 'use mitm.it and trust the downloaded profile manually' ;;
+      *) fail 'simulator' "couldn't add the CA to the Simulator" 'open mitm.it in the Simulator and install the profile' ;;
     esac
   fi
   exit 0
@@ -91,7 +95,7 @@ ensure_host_ca
 trust_status=0
 trust_ios_certificate || trust_status=$?
 if [ "$trust_status" -eq 2 ]; then
-  fail 'simulator' 'xcrun is not available' \
+  fail 'simulator' "xcrun isn't available" \
     'install Xcode and its command-line tools'
 elif [ "$trust_status" -eq 4 ]; then
   fail 'simulator' "no Xcode with a usable simulator toolchain ($(xcode-select -p 2>/dev/null || echo 'unknown selection'))" \
@@ -99,55 +103,98 @@ elif [ "$trust_status" -eq 4 ]; then
     'or point proxy-lab at one for this run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer proxy-lab start ios'
 elif [ "$trust_status" -ne 0 ]; then
   # The capture itself still works; only the automatic trust step is lost.
-  info '!' 'simulator' 'automatic CA trust unavailable; use mitm.it in the booted Simulator'
+  info '!' 'simulator' "couldn't trust the CA automatically — open mitm.it in the Simulator to finish"
 fi
 
 # An installed-but-unapproved extension captures nothing while mitmdump still
 # reports itself healthy. Fail here rather than hand back a proxy that logs
 # nothing and looks fine. `absent` is the first run, which still needs to start
 # mitmdump so macOS can install the extension and ask.
-case "$(mitmproxy_extension_state)" in
-  pending)
-    fail 'extension' 'the mitmproxy network extension is installed but not approved' \
-      "nothing will be captured until you allow it: open \"$EXTENSION_SETTINGS_PANE\"" \
-      'System Settings > General > Login Items & Extensions > Network Extensions' \
-      'then: proxy-lab start ios'
+case "$(ios_capture_mode)$(mitmproxy_extension_state)" in
+  localpending)
+    fail 'extension' "mitmproxy's network extension needs your approval" \
+      'allow it in System Settings > General > Login Items & Extensions > Network Extensions' \
+      "or jump there: open \"$EXTENSION_SETTINGS_PANE\"" \
+      'then run: proxy-lab start ios' \
+      'or skip the extension: PROXY_LAB_IOS_MODE=proxy proxy-lab start ios'
     ;;
 esac
 
+CAPTURE_MODE="$(ios_capture_mode)"
+PROXY_PORT="${PROXY_LAB_IOS_PORT:-8080}"
+if [ "$CAPTURE_MODE" = "proxy" ]; then
+  # Local capture cannot see loopback, and your dev hosts live there. The
+  # system proxy can: mitmproxy resolves names through /etc/hosts like any app.
+  if lsof -t -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    fail "port $PROXY_PORT" 'already in use' 'free it, or pick another: PROXY_LAB_IOS_PORT=<port> proxy-lab start ios'
+  fi
+  info '✓' 'mode' "system proxy — $(loopback_hosts | wc -l | tr -d ' ') dev hosts in /etc/hosts point at localhost, beyond local capture's reach"
+  MODE_ARGS=(--listen-port "$PROXY_PORT")
+else
+  MODE_ARGS=(--mode local:Simulator)
+fi
+
 "${MITMDUMP[@]}" \
-  --mode local:Simulator \
+  "${MODE_ARGS[@]}" \
   --showhost \
   --set ssl_insecure=true \
   "${MITMDUMP_SCRIPT_ARGS[@]}" &
 PROXY_PID=$!
 state_write proxy_pid "$PROXY_PID"
-# Local capture has no port to poll. Give mitmdump a moment: a non-zero exit
-# is a failed start, a clean exit is a finished run, and a live process is up.
-for _ in 1 2 3 4 5 6 7 8; do
+# A non-zero exit is a failed start, a clean exit is a finished run, and a
+# live process is up. In proxy mode "up" also means the port is listening.
+up=''
+for attempt in {1..20}; do
   kill -0 "$PROXY_PID" 2>/dev/null || break
+  if [ "$CAPTURE_MODE" = "proxy" ]; then
+    lsof -t -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1 && { up=1; break; }
+  elif [ "$attempt" -ge 8 ]; then
+    up=1; break
+  fi
   sleep 0.25
 done
-if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+if [ -z "$up" ] || ! kill -0 "$PROXY_PID" 2>/dev/null; then
   proxy_status=0
   wait "$PROXY_PID" || proxy_status=$?
   PROXY_PID=""
   [ "$proxy_status" -eq 0 ] && exit 0
-  fail 'mitmdump' "exited during startup (status $proxy_status)" \
+  fail 'mitmdump' "didn't start (status $proxy_status)" \
     'the output above says why' \
     'first run? approve the mitmproxy network extension when macOS asks'
 fi
+
+if [ "$CAPTURE_MODE" = "proxy" ]; then
+  service="$(ios_network_service || true)"
+  [ -n "$service" ] || fail 'proxy' "couldn't find your active network service" \
+    'connect to a network, or: PROXY_LAB_IOS_MODE=local proxy-lab start ios'
+  # Record first, change second: a crash in between still restores cleanly.
+  state_write previous_ios_web "$(ios_proxy_read "$service" web)"
+  state_write previous_ios_secureweb "$(ios_proxy_read "$service" secureweb)"
+  state_write previous_ios_service "$service"
+  networksetup -setwebproxy "$service" 127.0.0.1 "$PROXY_PORT" >/dev/null 2>&1 &&
+    networksetup -setsecurewebproxy "$service" 127.0.0.1 "$PROXY_PORT" >/dev/null 2>&1 ||
+    fail 'proxy' "couldn't set the proxy on $service" \
+      'macOS may want admin rights — try once more from an admin account' \
+      'or use local capture: PROXY_LAB_IOS_MODE=local proxy-lab start ios'
+  state_write port "$PROXY_PORT"
+  info '✓' 'proxy' "$service → 127.0.0.1:$PROXY_PORT (restored on stop)"
+fi
 mark_session_ready
-# First run installs the extension and macOS asks. Report that it is waiting
-# now, rather than letting the user discover an empty log later.
-if [ "$(mitmproxy_extension_state)" = 'pending' ]; then
-  info '!' 'extension' "approve it to capture traffic: open \"$EXTENSION_SETTINGS_PANE\""
+# First run installs the extension and macOS asks. Say so now, rather than
+# letting an empty log be the first hint. Proxy mode does not need it.
+if [ "$CAPTURE_MODE" = "local" ] && [ "$(mitmproxy_extension_state)" = 'pending' ]; then
+  info '!' 'extension' "approve it to start capturing: open \"$EXTENSION_SETTINGS_PANE\""
+fi
+if [ "$CAPTURE_MODE" = "proxy" ]; then
+  target="127.0.0.1:$PROXY_PORT"
+else
+  target='local:Simulator'
 fi
 if [ -n "${DURATION:-}" ]; then
-  info '✓' 'mitmdump' "local:Simulator — stopping in ${DURATION}s"
+  info '✓' 'mitmdump' "$target — stopping in ${DURATION}s"
   start_duration_watchdog
 else
-  info '✓' 'mitmdump' 'local:Simulator — Ctrl-C to stop'
+  info '✓' 'mitmdump' "$target — Ctrl-C to stop"
 fi
 printf '\n'
 wait "$PROXY_PID"

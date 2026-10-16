@@ -228,6 +228,84 @@ mitmproxy_extension_state() {
   fi
 }
 
+# macOS local capture never sees loopback traffic. A local docker stack is
+# usually reached through /etc/hosts entries that point at 127.0.0.1, and those
+# requests go straight to the container, unproxied and unlogged, while mitmdump
+# reports itself healthy. Print the host names that /etc/hosts maps to loopback
+# (one per line, `localhost` excluded) so the caller can say what to change.
+loopback_hosts() {
+  local hosts_file="${PROXY_LAB_HOSTS_FILE:-/etc/hosts}"
+  [ -r "$hosts_file" ] || return 0
+  awk '
+    /^[[:space:]]*#/ { next }
+    $1 ~ /^127\./ || $1 == "::1" {
+      for (i = 2; i <= NF; i++) {
+        if ($i ~ /^#/) break
+        if ($i != "localhost" && $i != "broadcasthost" && $i !~ /^ip6-/) print $i
+      }
+    }
+  ' "$hosts_file" | sort -u
+}
+
+# The Simulator follows the Mac's network settings. When dev hosts resolve to
+# loopback, capture has to come through the system proxy instead. These helpers
+# find the active network service, record what it had, and put it back.
+ios_capture_mode() {
+  case "${PROXY_LAB_IOS_MODE:-}" in
+    local|proxy) printf '%s' "$PROXY_LAB_IOS_MODE"; return 0 ;;
+  esac
+  if [ -n "$(loopback_hosts)" ]; then
+    printf 'proxy'
+  else
+    printf 'local'
+  fi
+}
+
+# The network service behind the default route, e.g. "Wi-Fi".
+ios_network_service() {
+  local device
+  device="$(route -n get default 2>/dev/null | awk '/interface:/ { print $2; exit }')"
+  [ -n "$device" ] || return 1
+  networksetup -listnetworkserviceorder 2>/dev/null | awk -v dev="$device" '
+    /^\([0-9]+\)/ { name = $0; sub(/^\([0-9]+\) /, "", name) }
+    index($0, "Device: " dev ")") { print name; exit }
+  '
+}
+
+# "yes|server|port" for one proxy kind (web or secureweb).
+ios_proxy_read() {
+  local service="$1" kind="$2" out enabled server port
+  out="$(networksetup "-get${kind}proxy" "$service" 2>/dev/null)" || return 1
+  enabled="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Enabled" { print tolower($2) }')"
+  server="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Server" { print $2 }')"
+  port="$(printf '%s\n' "$out" | awk -F': ' '$1 == "Port" { print $2 }')"
+  printf '%s|%s|%s' "$enabled" "$server" "$port"
+}
+
+ios_proxy_apply() {
+  local service="$1" kind="$2" record="$3" enabled server port
+  IFS='|' read -r enabled server port <<<"$record"
+  if [ "$enabled" = "yes" ] && [ -n "$server" ]; then
+    networksetup "-set${kind}proxy" "$service" "$server" "$port" >/dev/null 2>&1 || return 1
+  else
+    # Put the old address back too, so a disabled entry keeps what it had.
+    if [ -n "$server" ] && [ "$port" != "0" ]; then
+      networksetup "-set${kind}proxy" "$service" "$server" "$port" >/dev/null 2>&1 || return 1
+    fi
+    networksetup "-set${kind}proxystate" "$service" off >/dev/null 2>&1 || return 1
+  fi
+}
+
+# 0: restored, or nothing was recorded
+# 1: the restore failed, so the state must be kept
+state_restore_ios_proxy() {
+  local directory="$1" service
+  [ -f "$directory/previous_ios_service" ] || return 0
+  service="$(state_read_from "$directory" previous_ios_service)"
+  ios_proxy_apply "$service" web "$(state_read_from "$directory" previous_ios_web)" || return 1
+  ios_proxy_apply "$service" secureweb "$(state_read_from "$directory" previous_ios_secureweb)" || return 1
+}
+
 # Can simctl run under this developer dir? Command Line Tools are a legal
 # xcode-select target and contain no simctl, so `xcrun` being on PATH says
 # nothing. Ask the command the tool actually runs, and read the exit status
@@ -515,6 +593,9 @@ state_owner_matches() {
 # Such a PID is never signalled — it is not the process we recorded.
 state_adopt_stale() {
   local directory="$1" restore_status=0 serial
+  state_restore_ios_proxy "$directory" ||
+    fail 'session' 'could not restore the Mac proxy left by a stopped session' \
+      'run: proxy-lab reset ios'
   state_restore_android_proxy "$directory" || restore_status=$?
   case "$restore_status" in
     0) ;;
@@ -663,6 +744,7 @@ run_detach_handoff() {
   deadline=$((SECONDS + timeout))
   while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -f "$dir/ready" ] && [ "$(state_read_from "$dir" owner)" = "$DETACH_PID" ]; then
+      port="$(state_read_from "$dir" port)"
       if [ "${JSON_OUTPUT:-0}" = "1" ]; then
         printf '{'
         printf '"ok": true, '

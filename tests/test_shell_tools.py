@@ -694,6 +694,37 @@ exit 0
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def ios_capture_mode(self, hosts: str, mode: str = "") -> str:
+        with tempfile.TemporaryDirectory() as directory:
+            hosts_file = Path(directory) / "hosts"
+            hosts_file.write_text(hosts, encoding="utf-8")
+            env = os.environ.copy()
+            env["PROXY_LAB_HOSTS_FILE"] = str(hosts_file)
+            env["PROXY_LAB_IOS_MODE"] = mode
+            result = self.run_command(
+                [
+                    "bash",
+                    "-c",
+                    f'source "{ROOT / "proxy_lab" / "common.sh"}"; ios_capture_mode',
+                ],
+                env,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_ios_uses_local_capture_when_nothing_resolves_to_localhost(self) -> None:
+        hosts = "127.0.0.1 localhost\n255.255.255.255 broadcasthost\n::1 localhost\n"
+        self.assertEqual(self.ios_capture_mode(hosts), "local")
+
+    def test_ios_switches_to_the_system_proxy_for_localhost_dev_hosts(self) -> None:
+        hosts = "127.0.0.1 localhost\n127.0.0.1 app-dev.example.test # docker\n"
+        self.assertEqual(self.ios_capture_mode(hosts), "proxy")
+
+    def test_ios_mode_can_be_forced(self) -> None:
+        hosts = "127.0.0.1 app-dev.example.test\n"
+        self.assertEqual(self.ios_capture_mode(hosts, "local"), "local")
+        self.assertEqual(self.ios_capture_mode("127.0.0.1 localhost\n", "proxy"), "proxy")
+
     def test_ios_launcher_survives_a_mitmdump_that_exits_immediately(self) -> None:
         # CI's smoke fake writes its argv and returns at once. Anything that
         # probes mitmdump liveness misreads that as a failed start.
@@ -739,6 +770,7 @@ exit 0
                     "MITMDUMP_ARGS": str(args_file),
                     "PROXY_LAB_STATE_DIR": str(root / "state"),
                     "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_IOS_MODE": "local",
                     "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
                     "PROXY_LAB_PYTHON": sys.executable,
                 }
@@ -795,6 +827,7 @@ exit 0
                     "HOME": str(home),
                     "PROXY_LAB_STATE_DIR": str(root / "state"),
                     "PROXY_LAB_SKIP_UPDATE_CHECK": "1",
+                    "PROXY_LAB_IOS_MODE": "local",
                     "PROXY_LAB_MITMDUMP": str(fake_mitmproxy),
                     "PROXY_LAB_PYTHON": sys.executable,
                 }

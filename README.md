@@ -130,6 +130,8 @@ It also attempts to install the mitmproxy CA into the Simulator keychain with `s
 uvx proxy-lab trust ios --udid 11111111-1111-1111-1111-111111111111
 ```
 
+**Local docker stack?** If `/etc/hosts` points your dev hosts at `127.0.0.1`, nothing changes for you. macOS local capture cannot see loopback traffic, so `start ios` notices and captures through the system proxy instead (port 8080, `PROXY_LAB_IOS_PORT` to change), then restores your previous proxy settings on `stop`. While it runs, the whole Mac goes through mitmproxy, browser included. Force a mode with `PROXY_LAB_IOS_MODE=local` or `proxy`. In proxy mode you can skip step 3.
+
 **3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. macOS installs mitmproxy as a Network Extension the first time local capture starts and asks you to allow it. Allow it, then confirm:
 
 ```bash

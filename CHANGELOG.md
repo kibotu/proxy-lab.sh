@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- iOS reaches dev hosts that `/etc/hosts` points at localhost, such as a local
+  docker stack. macOS local capture cannot see loopback traffic, so when
+  `start ios` finds such hosts it captures through the system proxy instead,
+  and puts your previous proxy settings back on `stop`, `reset`, or stale-state
+  recovery. No change to `/etc/hosts` is needed, and Android is unaffected.
+  `doctor ios` says which mode it will use and why.
+- `PROXY_LAB_IOS_MODE=local|proxy` forces a mode. `PROXY_LAB_IOS_PORT` sets the
+  proxy-mode port (default 8080). `PROXY_LAB_HOSTS_FILE` points the detection
+  at another hosts file.
+
+### Changed
+
+- Messages are shorter and say what to do next. The network-extension error now
+  also offers `PROXY_LAB_IOS_MODE=proxy` as a way around the approval.
+
 ## [2.3.0] - 2026-10-16
 
 ### Added

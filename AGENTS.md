@@ -131,5 +131,7 @@ enough: `reset`.
 | `PROXY_LAB_MITMDUMP` | Specific `mitmdump`, skipping discovery. |
 | `MITMPROXY_SPEC` | uv fallback. Default `mitmproxy==12.2.3`. |
 | `DEVELOPER_DIR` | iOS only. Xcode to drive. Honoured when set, verified to carry `simctl`. |
+| `PROXY_LAB_IOS_MODE` | iOS only. `local` or `proxy`. Default: `proxy` when `/etc/hosts` maps a dev host to localhost (local capture cannot see loopback), else `local`. |
+| `PROXY_LAB_IOS_PORT` | iOS proxy mode only. Default `8080`. |
 | `PORT`, `AVD`, `SERIAL`, `BOOT_TIMEOUT` | Android only. |
  |

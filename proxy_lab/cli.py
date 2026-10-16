@@ -161,9 +161,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name, help_text in (
         ("stop", "stop a recorded proxy-lab session"),
-        ("reset", "stop sessions and clear Android proxy settings"),
+        ("reset", "stop sessions and put proxy settings back"),
         ("status", "show recorded proxy-lab sessions"),
-        ("doctor", "report versions, devices, tools, and configuration"),
+        ("doctor", "check your setup and say what to fix"),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("platform", choices=("android", "ios"), nargs="?")

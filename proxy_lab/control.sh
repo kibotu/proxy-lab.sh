@@ -178,6 +178,11 @@ stop_one() {
     fi
   fi
 
+  if ! state_restore_ios_proxy "$directory"; then
+    printf '  ✗ %-11s %s\n' 'stop' "couldn't restore your Mac proxy — run: proxy-lab reset ios" >&2
+    STOP_DETAIL="couldn't restore the Mac proxy; run reset"
+    return 1
+  fi
   if [ -f "$directory/platform" ] && [ "$(state_read_from "$directory" platform)" = "android" ]; then
     state_restore_android_proxy "$directory" || restore_status=$?
     case "$restore_status" in
@@ -447,16 +452,19 @@ run_doctor() {
       # captures nothing — so the state is read rather than hoped for. The
       # first run is the only case macOS still prompts for; after that the
       # prompt does not come back on its own.
-      case "$(mitmproxy_extension_state)" in
-        approved)
+      case "$(ios_capture_mode)$(mitmproxy_extension_state)" in
+        proxy*)
+          doctor_check ok 'extension' 'not needed in system-proxy mode'
+          ;;
+        *approved)
           doctor_check ok 'extension' 'mitmproxy network extension approved'
           ;;
-        pending)
+        *pending)
           doctor_check fail 'extension' \
             "installed but not approved, so local capture will not see any traffic — open \"$EXTENSION_SETTINGS_PANE\" and allow mitmproxy, then re-run" \
             "or from a terminal: open \"$EXTENSION_SETTINGS_PANE\""
           ;;
-        absent)
+        *absent)
           doctor_check warn 'extension' \
             'not installed yet; the first proxy-lab start ios installs it and macOS asks you to allow it'
           ;;
@@ -467,6 +475,12 @@ run_doctor() {
       esac
     else
       doctor_check fail 'xcrun' 'not found — install Xcode and its command-line tools'
+    fi
+    if [ "$(ios_capture_mode)" = "proxy" ]; then
+      doctor_check ok 'capture' \
+        "system proxy — $(loopback_hosts | wc -l | tr -d ' ') dev hosts in /etc/hosts point at localhost, beyond local capture's reach"
+    else
+      doctor_check ok 'capture' 'local capture — no localhost dev hosts in /etc/hosts'
     fi
   fi
 
