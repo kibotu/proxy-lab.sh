@@ -26,6 +26,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # hatch-vcs derives the version from tags; a shallow clone cannot.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.2.0
       - name: unit and shell integration tests
         run: uv run python -m unittest discover -s tests -v
@@ -72,6 +75,9 @@ jobs:
       PORT: "18080"
     steps:
       - uses: actions/checkout@v7
+        with:
+          # hatch-vcs derives the version from tags; a shallow clone cannot.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.2.0
       - name: verify iOS local-mode arguments
         run: |
@@ -112,7 +118,11 @@ jobs:
 
           # The local redirector needs interactive macOS approval. Check its
           # arguments above; use regular mode here for the headless smoke test.
-          uv tool run --from 'mitmproxy@latest' mitmdump \
+          # Without PROXY_LAB_CONFIG the addon captures the host names in
+          # /etc/hosts, and a runner's holds no example.com. Pin domains.yaml
+          # so the assertions below test the dot semantics they describe.
+          PROXY_LAB_CONFIG="$GITHUB_WORKSPACE/domains.yaml" \
+            uv tool run --from 'mitmproxy@latest' mitmdump \
             --listen-host 0.0.0.0 \
             --listen-port "$PORT" \
             --set ssl_insecure=true \
