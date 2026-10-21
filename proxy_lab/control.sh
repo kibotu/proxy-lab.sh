@@ -144,7 +144,7 @@ status_one() {
 }
 
 stop_one() {
-  local directory="$1" owner waited=0 restore_status=0 serial
+  local directory="$1" owner waited=0 restore_status=0 serial session_platform
   owner="$(state_read_from "$directory" owner)"
   if state_pid_alive "$owner"; then
     if ! state_owner_matches "$directory"; then
@@ -174,7 +174,10 @@ stop_one() {
     fi
   fi
 
-  if ! state_restore_ios_proxy "$directory"; then
+  # Only an iOS session can have left an auto-config behind, and only an
+  # explicit command puts it back.
+  session_platform="$(state_read_from "$directory" platform)"
+  if [ "$session_platform" = "ios" ] && ! state_restore_ios_proxy "$directory"; then
     printf '  ✗ %-11s %s\n' 'stop' "couldn't put your Mac's proxy setting back — run: proxy-lab reset ios" >&2
     STOP_DETAIL="couldn't restore the Mac proxy; run reset"
     return 1
@@ -483,10 +486,18 @@ run_doctor() {
       doctor_check warn 'localhost' \
         "$(printf '%s' "$loopback_names" | wc -w | tr -d ' ') /etc/hosts names point at localhost, which local capture can't see — to capture them: proxy-lab start ios --system-proxy"
     fi
-    leftover="$(ios_leftover_pacs | head -n 1)"
-    if [ -n "$leftover" ]; then
-      doctor_check fail 'system proxy' \
-        "a proxy-lab auto-config is still set on ${leftover%%|*} with no session behind it — run: proxy-lab reset ios"
+    orphan="$(ios_orphan_pacs | head -n 1)"
+    if [ -n "$orphan" ]; then
+      orphan_service="${orphan%%|*}"
+      orphan_enabled="${orphan#*|}"
+      orphan_enabled="${orphan_enabled%%|*}"
+      if [ "$orphan_enabled" = "yes" ]; then
+        doctor_check fail 'system proxy' \
+          "a proxy-lab auto-config is still enabled on $orphan_service with no session behind it — run: proxy-lab reset ios"
+      else
+        doctor_check warn 'system proxy' \
+          "a proxy-lab auto-config address is still on $orphan_service — run: proxy-lab reset ios"
+      fi
     fi
   fi
 
@@ -632,7 +643,14 @@ case "$OPERATION" in
         reset_one "$directory" || result=1
       done < <(state_directories "$platform")
     done
-    case "$PLATFORM" in ios|all) ios_clear_leftover_pacs ;; esac
+    case "$PLATFORM" in
+      ios|all)
+        # Put the recorded setting back even when no session is left, then
+        # clear whatever proxy-lab address is still on the machine.
+        state_restore_ios_proxy "$(state_root)/ios" || result=1
+        ios_clear_leftover_pacs
+        ;;
+    esac
     if [ "$PLATFORM" = "android" ]; then
       clear_android_proxy
       found=1

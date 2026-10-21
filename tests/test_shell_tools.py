@@ -738,10 +738,12 @@ while :; do sleep 1; done
         xcrun.chmod(0o755)
         self.approved_extension(fake_bin)
         # Never let a test reach the real networksetup: by default there are no
-        # network services to read or change.
+        # network services to read or change. NS_LOG records every call, so a
+        # test can assert that nothing was written.
         networksetup = fake_bin / "networksetup"
         networksetup.write_text(
             "#!/usr/bin/env bash\n"
+            '[ -n "${NS_LOG:-}" ] && printf \'%s\\n\' "$*" >>"$NS_LOG"\n'
             "[ \"${1:-}\" = -listallnetworkservices ] && "
             "echo 'An asterisk (*) denotes that a network service is disabled.'\n"
             "exit 0\n",
@@ -1018,7 +1020,7 @@ wait $child
             finally:
                 self.reap_stragglers(root)
 
-    def test_next_start_puts_a_leftover_proxy_back(self) -> None:
+    def test_next_start_leaves_the_mac_settings_alone(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             env = self.system_proxy_env(root)
@@ -1028,7 +1030,50 @@ wait $child
                     ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--duration", "1"], env
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+                # A plain start never moves the Mac's proxy: the auto-config
+                # the killed run left behind is still there, and it says so.
+                self.assertTrue((root / "ns").read_text().startswith("yes|"))
+                self.assertIn("reset ios", result.stdout)
+                # An explicit reset is what puts the previous setting back.
+                reset = self.run_command(
+                    ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "ios"], env
+                )
+                self.assertEqual(reset.returncode, 0, reset.stderr)
                 self.assertEqual((root / "ns").read_text().strip(), self.ORIGINAL_PAC)
+            finally:
+                self.reap_stragglers(root)
+
+    def test_plain_start_never_writes_network_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.ios_env(root, root / "bin")
+            log = root / "networksetup.log"
+            env["NS_LOG"] = str(log)
+            result = self.run_command(
+                ["bash", str(ROOT / "ios" / "start-proxy.sh"), "--duration", "1"], env
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+            self.assertEqual(
+                [call for call in calls if call.startswith("-set")],
+                [],
+                "a plain start wrote to the Mac's network settings",
+            )
+
+    def test_reset_removes_the_proxy_lab_address_entirely(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = self.system_proxy_env(root)
+            # The setting proxy-lab replaced was one of its own: a dead
+            # address. Putting it back would break the machine.
+            (root / "ns").write_text("no|http://127.0.0.1:9/proxy.pac\n", encoding="utf-8")
+            try:
+                self.killed_system_proxy_session(root, env)
+                reset = self.run_command(
+                    ["bash", str(ROOT / "proxy_lab" / "control.sh"), "reset", "ios"], env
+                )
+                self.assertEqual(reset.returncode, 0, reset.stderr)
+                self.assertEqual((root / "ns").read_text().strip(), "no|")
             finally:
                 self.reap_stragglers(root)
 

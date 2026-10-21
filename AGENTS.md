@@ -63,7 +63,7 @@ Stdout is only that object. Failures go to stderr with an exit code below.
 | `doctor [platform] [--json]` | Preflight. `.next` is the command to run when `.ok` is true. |
 | `init android` | Write `network_security_config.xml`; print the manifest attribute. |
 | `trust ios` | Install the CA into the Simulator keychain. |
-| `start ios --system-proxy` | Opt in: capture hosts that `/etc/hosts` points at localhost, which local capture cannot see. Sets a PAC for those hosts only; restored on stop. |
+| `start ios --system-proxy` | Opt in: capture hosts that `/etc/hosts` points at localhost, which local capture cannot see. Sets a PAC for those hosts only; restored on stop. The only mode that writes to macOS network settings. |
 
 `--json` stdout is **only** the JSON document. Parse the whole stream.
 
@@ -118,7 +118,7 @@ pinned. When none resolves, `doctor ios` fails with `no usable Xcode` and
 
 ## Recovery
 
-`stop` restores the Android proxy recorded before the run. proxy-lab changes macOS network settings only for `start ios --system-proxy`, and `stop`, `reset`, and the next `start` put them back. `doctor` fails with `system proxy` when one was left behind: run `reset ios`. `start` and `reset` also end a `mitmdump` left behind by a killed launcher. `logs` still works
+`stop` restores the Android proxy recorded before the run. proxy-lab changes macOS network settings only for `start ios --system-proxy`; `stop` and `reset` put them back. A plain `start ios` only reads them, and says so when it finds one left behind — it never writes. `doctor` fails with `system proxy` when one was left behind: run `reset ios`. `start` and `reset` also end a `mitmdump` left behind by a killed launcher. `logs` still works
 after stop, because the log lives outside the state directory. If that is not
 enough: `reset`.
 

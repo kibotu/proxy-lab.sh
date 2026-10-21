@@ -130,13 +130,15 @@ It also attempts to install the mitmproxy CA into the Simulator keychain with `s
 uvx proxy-lab trust ios --udid 11111111-1111-1111-1111-111111111111
 ```
 
-**Local docker stack?** By default proxy-lab leaves your Mac's network settings alone. macOS local capture can't see traffic to `127.0.0.1`, so requests to hosts that `/etc/hosts` points at localhost won't show up in the log; `doctor ios` tells you when that applies. To capture them, opt in:
+**Local docker stack?** By default proxy-lab leaves your Mac's network settings alone — a plain `start ios` reads them and never writes to them. macOS local capture can't see traffic to `127.0.0.1`, so requests to hosts that `/etc/hosts` points at localhost won't show up in the log; `doctor ios` tells you when that applies. To capture them, opt in:
 
 ```bash
 uvx proxy-lab start ios --system-proxy
 ```
 
-This sets a proxy auto-config on your active network service for the length of the session. It sends only your hosts to mitmproxy; everything else stays direct. `stop`, `reset`, and the next `start` put your previous setting back, and `doctor` flags one that was left behind. You can skip step 3 in this mode: it doesn't use the network extension. Android needs none of this; its proxy resolves `/etc/hosts` like any other app.
+This sets a proxy auto-config on your active network service for the length of the session. It sends only your hosts to mitmproxy; everything else stays direct. `stop` and `reset` put your previous setting back, and `doctor` flags one that was left behind. You can skip step 3 in this mode: it doesn't use the network extension. Android needs none of this; its proxy resolves `/etc/hosts` like any other app.
+
+> `--system-proxy` is the only thing in this tool that writes to your Mac's network settings, and only for as long as the session runs. A plain `start ios` reports a setting left behind by an earlier run and leaves it to `proxy-lab reset ios` to put back.
 
 **3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. macOS installs mitmproxy as a Network Extension the first time local capture starts and asks you to allow it. Allow it, then confirm:
 

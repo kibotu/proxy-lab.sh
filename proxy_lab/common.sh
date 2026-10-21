@@ -15,6 +15,11 @@ PROXY_LAB_COMMON_LOADED=1
 # shellcheck disable=SC2034 # consumed by proxy_lab/control.sh and ios/start-proxy.sh
 EXTENSION_SETTINGS_PANE="x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
 
+# Only a run that opted into changing the Mac's network settings may write to
+# them. `start ios --system-proxy` sets this; nothing else does. A plain
+# `start ios` therefore reads the Mac's proxy configuration and never moves it.
+SYSTEM_CHANGES_ALLOWED=0
+
 # Exit codes are part of the contract: a script can branch on the reason a run
 # failed without parsing English. Keep this table in sync with README.md.
 #   0 ok  1 unspecified  2 arguments  3 config/input  4 missing tool
@@ -283,6 +288,12 @@ ios_autoproxy_read() {
 ios_autoproxy_apply() {
   local service="$1" record="$2" enabled url
   IFS='|' read -r enabled url <<<"$record"
+  if ios_pac_is_ours "$url"; then
+    # A proxy-lab auto-config points at a proxy that is gone. Putting it back
+    # would break the machine, so the address goes away instead.
+    ios_autoproxy_clear "$service" || return 1
+    return 0
+  fi
   if [ "$enabled" = "yes" ] && [ -n "$url" ]; then
     networksetup -setautoproxyurl "$service" "$url" >/dev/null 2>&1 || return 1
   else
@@ -294,6 +305,15 @@ ios_autoproxy_apply() {
   fi
 }
 
+# Take an auto-config address away. macOS refuses an empty URL, and a single
+# space is what it stores as "no address". Setting an address switches the
+# entry on, so the switch goes off right behind it.
+ios_autoproxy_clear() {
+  local service="$1"
+  networksetup -setautoproxyurl "$service" " " >/dev/null 2>&1 || return 1
+  networksetup -setautoproxystate "$service" off >/dev/null 2>&1 || return 1
+}
+
 # A proxy-lab PAC is always served from loopback as /proxy.pac.
 ios_pac_is_ours() {
   case "$1" in
@@ -302,30 +322,80 @@ ios_pac_is_ours() {
   esac
 }
 
-# Network services that still carry a proxy-lab PAC with no live session behind
-# it. One line each: "service|url".
-ios_leftover_pacs() {
-  local service record url
+# Every network service that carries a proxy-lab auto-config. One line each:
+# "service|enabled|url". Read-only: it reports, it never changes a setting.
+ios_pac_services() {
+  local service record enabled url
   command -v networksetup >/dev/null 2>&1 || return 0
-  state_owner_matches "$(state_root)/ios" && return 0
   while IFS= read -r service; do
     [ -n "$service" ] || continue
     record="$(ios_autoproxy_read "$service" || true)"
-    case "$record" in yes\|*) ;; *) continue ;; esac
+    enabled="${record%%|*}"
     url="${record#*|}"
     ios_pac_is_ours "$url" || continue
-    printf '%s|%s\n' "$service" "$url"
+    printf '%s|%s|%s\n' "$service" "$enabled" "$url"
   done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | sed 's/^\*//')
 }
 
+# The auto-configs no live session owns: ours to put back. One line each:
+# "service|enabled|url".
+ios_orphan_pacs() {
+  state_owner_matches "$(state_root)/ios" && return 0
+  ios_pac_services
+}
+
+# Network services that still carry an enabled proxy-lab PAC with no live
+# session behind it. One line each: "service|url".
+ios_leftover_pacs() {
+  local line enabled url
+  while IFS= read -r line; do
+    enabled="${line%%|*}"
+    url="${line#*|}"
+    url="${url#*|}"
+    [ "$enabled" = "yes" ] || continue
+    printf '%s|%s\n' "${line%%|*}" "$url"
+  done < <(ios_orphan_pacs)
+}
+
+# Put a proxy-lab auto-config away for good: the switch off *and* the address
+# gone. A disabled entry that still carries a dead address is a trap for the
+# next tool that switches it on.
 ios_clear_leftover_pacs() {
   local line service
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     service="${line%%|*}"
-    networksetup -setautoproxystate "$service" off >/dev/null 2>&1 &&
+    ios_autoproxy_clear "$service" &&
       info '✓' 'cleanup' "cleared a leftover proxy-lab auto-config on $service"
-  done < <(ios_leftover_pacs)
+  done < <(ios_orphan_pacs)
+}
+
+# The auto-config proxy-lab replaced, remembered until it is put back. It
+# lives outside the session directory on purpose: a session that ends must not
+# take the record of a change it never undid with it.
+ios_auto_config_path() {
+  printf '%s/ios-auto-config' "$(state_root)"
+}
+
+ios_auto_config_write() {
+  local service="$1" record="$2" path
+  path="$(ios_auto_config_path)"
+  # Keep the first record: it describes the setting as it was before proxy-lab
+  # touched the Mac at all.
+  [ -f "$path" ] && return 0
+  mkdir -p "$(dirname "$path")" 2>/dev/null || return 1
+  printf '%s|%s\n' "$service" "$record" >"$path"
+}
+
+ios_auto_config_read() {
+  local path
+  path="$(ios_auto_config_path)"
+  [ -f "$path" ] || return 1
+  cat "$path"
+}
+
+ios_auto_config_clear() {
+  rm -f "$(ios_auto_config_path)"
 }
 
 # A free loopback port, chosen by the OS.
@@ -370,14 +440,20 @@ state_restore_ios_proxy() {
 # 0: restored, or nothing was recorded
 # 1: the restore failed, so the state must be kept
 state_restore_ios_proxy_now() {
-  local directory="$1" service pac_pid
+  local directory="$1" service pac_pid record
   pac_pid="$(state_read_from "$directory" pac_pid)"
   if [ -n "$pac_pid" ]; then
     kill "$pac_pid" 2>/dev/null || true
   fi
-  [ -f "$directory/previous_ios_service" ] || return 0
-  service="$(state_read_from "$directory" previous_ios_service)"
-  ios_autoproxy_apply "$service" "$(state_read_from "$directory" previous_ios_auto)"
+  record="$(ios_auto_config_read || true)"
+  if [ -z "$record" ] && [ -f "$directory/previous_ios_service" ]; then
+    # A session started by an older version kept the record in its directory.
+    record="$(state_read_from "$directory" previous_ios_service)|$(state_read_from "$directory" previous_ios_auto)"
+  fi
+  [ -n "$record" ] || return 0
+  service="${record%%|*}"
+  ios_autoproxy_apply "$service" "${record#*|}" || return 1
+  ios_auto_config_clear
 }
 
 # Can simctl run under this developer dir? Command Line Tools are a legal
@@ -719,9 +795,13 @@ state_stop_recorded_proxy() {
 state_adopt_stale() {
   local directory="$1" restore_status=0 serial
   state_stop_recorded_proxy "$directory"
-  state_restore_ios_proxy "$directory" ||
-    fail 'session' "couldn't put your Mac's proxy setting back" \
-      'run: proxy-lab reset ios'
+  # Only a run that opted into changing the Mac's settings may put one back.
+  # A plain start reports the leftover instead of moving it.
+  if [ "${SYSTEM_CHANGES_ALLOWED:-0}" -eq 1 ]; then
+    state_restore_ios_proxy "$directory" ||
+      fail 'session' "couldn't put your Mac's proxy setting back" \
+        'run: proxy-lab reset ios'
+  fi
   state_restore_android_proxy "$directory" || restore_status=$?
   case "$restore_status" in
     0) ;;

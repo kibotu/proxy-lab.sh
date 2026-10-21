@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A plain `start ios` no longer writes to macOS network settings. It reads
+  them, and reports an auto-config left behind by an earlier run instead of
+  quietly putting it back. `stop` and `reset` are the commands that put a
+  setting back; `start ios --system-proxy` remains the only mode that changes
+  one, and only for as long as the session runs.
+- The auto-config proxy-lab installs is now removed completely when it is put
+  back: the address goes away with the switch. macOS has no command to unset
+  an automatic proxy URL, so the address is set to a single space, which
+  macOS stores as no address. A disabled entry that still carried a dead
+  proxy-lab address was a trap for the next tool that switched it on.
+- The record of the setting proxy-lab replaced now lives outside the session
+  directory. A session that ended could no longer take it with it and lose
+  the original setting.
+- `doctor ios` reports an auto-config address left on a service as a warning,
+  and an enabled one as a failure, as before.
+
 ## [2.4.3] - 2026-10-16
 
 ### Changed

@@ -48,6 +48,12 @@ PLATFORM_NAME=ios
 
 configure_python_path
 parse_launcher_args "$@"
+# The one mode that may write to the Mac's network settings. Everything else
+# reads them and leaves them alone.
+if [ "$SYSTEM_PROXY" -eq 1 ]; then
+  # shellcheck disable=SC2034 # consumed by proxy_lab/common.sh
+  SYSTEM_CHANGES_ALLOWED=1
+fi
 validate_common_files
 [ "$PORT" -eq 0 ] || fail 'arguments' '--port is only valid for Android'
 [ -z "$AVD" ] || fail 'arguments' '--avd is only valid for Android'
@@ -67,8 +73,10 @@ cleanup() {
     kill "$DURATION_PID" 2>/dev/null || true
   fi
   # The Mac's proxy setting goes back first. mitmdump can linger on open
-  # connections, and the Mac must not stay pointed at it meanwhile.
-  if [ "$STATE_ACQUIRED" -eq 1 ] && ! state_restore_ios_proxy "$STATE_DIR"; then
+  # connections, and the Mac must not stay pointed at it meanwhile. Only a run
+  # that installed an auto-config has one to put back.
+  if [ "$SYSTEM_PROXY" -eq 1 ] && [ "$STATE_ACQUIRED" -eq 1 ] &&
+    ! state_restore_ios_proxy "$STATE_DIR"; then
     restore_failed=1
   fi
   if [ -n "$PROXY_PID" ]; then
@@ -106,8 +114,17 @@ if [ "$TRUST_ONLY" -eq 1 ]; then
 fi
 
 trap_cleanup
-# Before claiming the session: a live one would still own its proxy setting.
-ios_clear_leftover_pacs
+if [ "$SYSTEM_PROXY" -eq 1 ]; then
+  # This mode owns the Mac's settings, so it also clears the ones an earlier
+  # run left behind before it installs one of its own.
+  ios_clear_leftover_pacs
+else
+  # Report, never fix: a plain start must not change the Mac's settings.
+  orphan="$(ios_orphan_pacs | head -n 1)"
+  if [ -n "$orphan" ]; then
+    info '!' 'proxy' "an auto-config from an earlier run is still set on ${orphan%%|*} — run: proxy-lab reset ios"
+  fi
+fi
 state_acquire ios 0
 ensure_host_ca
 
@@ -191,8 +208,7 @@ if [ "$SYSTEM_PROXY" -eq 1 ]; then
   pac_url="$(ios_pac_serve "127.0.0.1:$PROXY_PORT")" ||
     fail 'proxy' "couldn't serve the auto-config" 'python3 is required for --system-proxy'
   # Record first, change second: a crash in between still restores cleanly.
-  state_write previous_ios_auto "$(ios_autoproxy_read "$service")"
-  state_write previous_ios_service "$service"
+  ios_auto_config_write "$service" "$(ios_autoproxy_read "$service")"
   networksetup -setautoproxyurl "$service" "$pac_url" >/dev/null 2>&1 ||
     fail 'proxy' "couldn't set the proxy on $service" \
       'macOS may want admin rights — try again from an admin account' \
