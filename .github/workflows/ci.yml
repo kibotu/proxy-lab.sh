@@ -53,6 +53,7 @@ jobs:
               "proxy_lab/ios/start-proxy.sh",
               "proxy_lab/common.sh",
               "proxy_lab/control.sh",
+              "proxy_lab/certs.py",
               "proxy_lab/config.py",
               "proxy_lab/local_router.py",
               "proxy_lab/domains.yaml",

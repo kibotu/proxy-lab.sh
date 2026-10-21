@@ -1031,3 +1031,36 @@ trust_ios_certificate() {
   xcrun simctl keychain "$udid" add-root-cert "$CERT" >/dev/null 2>&1 || return 1
   info '✓' 'simulator' "CA trusted in $udid"
 }
+
+# The Simulator has to trust the certificate a local server presents before an
+# app can load it. A private CA — a Docker nginx with a CA of its own, the
+# usual case for local development — is not trusted by default, so the app
+# reports an invalid certificate, the request dies during the TLS handshake,
+# and the server never sees it. The CA is taken from the server itself, so
+# nothing has to be configured and nothing has to be kept up to date.
+# Prints one line per CA. Returns 1 when none was found.
+trust_ios_local_cas() {
+  local udid="$1" python_bin="${PROXY_LAB_PYTHON:-}" hosts lines name path hosts_note
+  local directory trusted=0
+  command -v xcrun >/dev/null 2>&1 || return 1
+  [ -n "$udid" ] || return 1
+  python_bin="${python_bin:-$(command -v python3 || true)}"
+  [ -n "$python_bin" ] || return 1
+  hosts="$(loopback_hosts | paste -sd' ' -)"
+  [ -n "$hosts" ] || return 1
+  directory="$(mktemp -d "${TMPDIR:-/tmp}/proxy-lab-cas.XXXXXX")" || return 1
+  # shellcheck disable=SC2086 # the host names are separate arguments
+  lines="$(PYTHONPATH="$(python_path)" "$python_bin" -m proxy_lab.certs \
+    --out-dir "$directory" $hosts 2>/dev/null)"
+  while IFS=$'\t' read -r name path hosts_note; do
+    [ -n "${path:-}" ] || continue
+    if xcrun simctl keychain "$udid" add-root-cert "$path" >/dev/null 2>&1; then
+      info '✓' 'local CA' "$name trusted in the Simulator — $hosts_note"
+      trusted=1
+    fi
+  done <<EOF
+$lines
+EOF
+  rm -rf "$directory"
+  [ "$trusted" -eq 1 ]
+}

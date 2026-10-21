@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `start ios` and `trust ios` now trust the CA of the local servers they
+  capture. A local stack that terminates TLS with a private CA — a Docker
+  nginx with a CA of its own — is not trusted by the Simulator by default:
+  the app reports an invalid certificate, the request dies during the TLS
+  handshake, and the server never sees it, so the proxy logged nothing
+  either. The CA is taken from the server itself: the chain it sends ends
+  with the certificate that signed it, and a root, which no server sends,
+  comes from the Mac's keychain — the place that already trusts it, because
+  the local site loads in a browser there. Nothing has to be configured.
+
 ## [2.5.0] - 2026-10-21
 
 ### Changed

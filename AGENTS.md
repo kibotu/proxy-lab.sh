@@ -62,7 +62,7 @@ Stdout is only that object. Failures go to stderr with an exit code below.
 | `logs [platform] [--lines N]` | Print captured traffic. `--json` returns the file path. |
 | `doctor [platform] [--json]` | Preflight. `.next` is the command to run when `.ok` is true. |
 | `init android` | Write `network_security_config.xml`; print the manifest attribute. |
-| `trust ios` | Install the CA into the Simulator keychain. |
+| `trust ios` | Install the CA in the Simulator keychain: mitmproxy's, and the one the local servers sign with. |
 | `start ios --system-proxy` | Opt in: capture hosts that `/etc/hosts` points at localhost, which local capture cannot see. Sets a PAC for those hosts only; restored on stop. The only mode that writes to macOS network settings. |
 
 `--json` stdout is **only** the JSON document. Parse the whole stream.

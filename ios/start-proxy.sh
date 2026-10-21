@@ -110,6 +110,8 @@ if [ "$TRUST_ONLY" -eq 1 ]; then
       *) fail 'simulator' "couldn't add the CA to the Simulator" 'open mitm.it in the Simulator and install the profile' ;;
     esac
   fi
+  # The local servers' own CA, so an app can load them without a detour.
+  trust_ios_local_cas "$(ios_booted_udid || true)" || true
   exit 0
 fi
 
@@ -140,6 +142,11 @@ elif [ "$trust_status" -eq 4 ]; then
 elif [ "$trust_status" -ne 0 ]; then
   # The capture itself still works; only the automatic trust step is lost.
   info '!' 'simulator' "couldn't trust the CA automatically — open mitm.it in the Simulator to finish"
+else
+  # The local servers' own CA: an app that loads a local page talks to the
+  # server directly unless the proxy is in the path, and a private CA is not
+  # trusted by default. The CA comes from the server, so nothing to configure.
+  trust_ios_local_cas "$(ios_booted_udid || true)" || true
 fi
 
 # An installed-but-unapproved extension captures nothing while mitmdump still

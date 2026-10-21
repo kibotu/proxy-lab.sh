@@ -122,6 +122,59 @@ fi
                 xcrun_log.read_text(encoding="utf-8"),
             )
 
+    def test_ios_trusts_the_ca_of_a_local_server(self) -> None:
+        # A local server with a CA of its own: the Simulator has to trust it
+        # before an app can load the page, or the request dies in the TLS
+        # handshake and the server never sees it.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            xcrun_log = root / "xcrun.log"
+            (fake_bin / "xcrun").write_text(
+                """#!/usr/bin/env bash
+printf '%s\\n' \"$*\" >> \"$XCRUN_LOG\"
+""",
+                encoding="utf-8",
+            )
+            (fake_bin / "xcrun").chmod(0o755)
+            # Stands in for the certificate lookup, which asks the server
+            # itself which CA signed it.
+            fake_python = fake_bin / "fakepython"
+            fake_python.write_text(
+                """#!/usr/bin/env bash
+printf 'check24-dev.de\\t/tmp/proxy-lab-fake-ca.pem\\tapp-dev.example.test\\n'
+""",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            xcrun_log.write_text("", encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                    "XCRUN_LOG": str(xcrun_log),
+                    "PROXY_LAB_PYTHON": str(fake_python),
+                }
+            )
+            result = self.run_command(
+                [
+                    "bash",
+                    "-c",
+                    f'PROJECT_DIR="{ROOT}"; source "{ROOT}/proxy_lab/common.sh"; '
+                    "trust_ios_local_cas SIM-UDID",
+                ],
+                env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "simctl keychain SIM-UDID add-root-cert /tmp/proxy-lab-fake-ca.pem",
+                xcrun_log.read_text(encoding="utf-8"),
+            )
+            self.assertIn("local CA", result.stdout)
+
     def test_ios_resolves_an_installed_xcode_when_simctl_does_not_answer(self) -> None:
         # xcode-select points at Command Line Tools: xcrun is on PATH but every
         # simctl call fails. The run must fall back to an installed Xcode.

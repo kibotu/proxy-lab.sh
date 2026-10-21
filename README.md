@@ -140,6 +140,12 @@ This sets a proxy auto-config on your active network service for the length of t
 
 > `--system-proxy` is the only thing in this tool that writes to your Mac's network settings, and only for as long as the session runs. A plain `start ios` reports a setting left behind by an earlier run and leaves it to `proxy-lab reset ios` to put back.
 
+**Local servers with a CA of their own?** A local stack that terminates TLS with a private CA — a Docker nginx with a CA of its own, the usual case — is not trusted by the Simulator by default. The app then reports an invalid certificate, the request dies during the TLS handshake, and the server never sees it. proxy-lab takes the CA from the server itself: the chain the server sends ends with the certificate that signed it, and a root, which no server sends, comes from the Mac's keychain — the place that already trusts it, because the local site loads in a browser there. `start ios` and `trust ios` install it in the Simulator, one line per host:
+
+```bash
+uvx proxy-lab trust ios
+```
+
 **3. Allow mitmproxy's network extension.** The launcher requests local capture with the `Simulator` process filter. It is intended to cover simulators launched from Xcode or Device Hub. macOS installs mitmproxy as a Network Extension the first time local capture starts and asks you to allow it. Allow it, then confirm:
 
 ```bash
@@ -360,6 +366,7 @@ Start with `uvx proxy-lab doctor android` (or `ios`). It prints the next command
 - **`no usable Xcode`** — no candidate could run `simctl`. Install a full Xcode, or point one run at it with `DEVELOPER_DIR=…`.
 - **`✗ extension installed but not approved`** — mitmdump is running but the network extension is not, so nothing is captured at all. This is the one failure mode that looks like a working proxy. Approve it: `open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"`, then re-run. `start ios` refuses to start in this state (exit 5).
 - **Nothing shows up on iOS** — make sure a simulator is running (from Xcode or Device Hub), the network extension was allowed, and the CA is trusted. Requests to hosts that `/etc/hosts` points at localhost are not visible to local capture; use `--system-proxy` (see "Local docker stack?" above).
+- **The app says the certificate is invalid, the server logs nothing** — the Simulator does not trust the CA the local server signs with. `start ios` installs it when it can find it: the CA comes from the server, or from the Mac's keychain when the server signs with a root it does not send. When neither has it, the CA has to be installed on the Mac first — a local site that does not load in the Mac's browser cannot be trusted by the Simulator either.
 - **No `[local_router]` lines** — the host is not in the domains file in use. See [Choose the domains to log](#choose-the-domains-to-log).
 
 Still stuck? [Open an issue](https://github.com/kibotu/proxy-lab.sh/issues) with the exact error line.
